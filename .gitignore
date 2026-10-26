@@ -1,0 +1,118 @@
+# ==============================================================================
+# PersonaRAG Monorepo Git Ignore
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# Dependencies & Package Managers
+# ------------------------------------------------------------------------------
+node_modules/
+*/node_modules/
+.pnp
+.pnp.js
+
+# Package manager logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# ------------------------------------------------------------------------------
+# Environment Variables & Secrets (CRITICAL: Never commit API keys/passwords)
+# ------------------------------------------------------------------------------
+.env
+.env.*
+*.env
+*.env.local
+*.env.development.local
+*.env.test.local
+*.env.production.local
+
+# Preserve example/template files
+!.env.example
+!.env.template
+!*/.env.example
+!*/.env.template
+
+# ------------------------------------------------------------------------------
+# Build Outputs & Compiled Code
+# ------------------------------------------------------------------------------
+dist/
+*/dist/
+build/
+*/build/
+out/
+*/out/
+*.tsbuildinfo
+.vite/
+*/.vite/
+
+# ------------------------------------------------------------------------------
+# Lambda Packages & Zip Bundles
+# ------------------------------------------------------------------------------
+*.zip
+ingestion-lambda.zip
+*/lambda-bundle.zip
+lambda.cjs
+lambda.cjs.map
+
+# ------------------------------------------------------------------------------
+# Local Storage, Uploads, and Database Artifacts
+# ------------------------------------------------------------------------------
+data/
+*/data/
+storage/
+*/storage/
+uploads/
+*/uploads/
+*.local.db
+*.sqlite
+*.sqlite3
+
+# Temporary files & sample downloads
+temp_*
+*.tmp
+*.temp
+
+# ------------------------------------------------------------------------------
+# Testing & Code Coverage
+# ------------------------------------------------------------------------------
+coverage/
+*/coverage/
+.nyc_output/
+.vitest/
+
+# ------------------------------------------------------------------------------
+# Logs & Diagnostic Files
+# ------------------------------------------------------------------------------
+logs/
+*/logs/
+*.log
+
+# ------------------------------------------------------------------------------
+# Editor & IDE Configs
+# ------------------------------------------------------------------------------
+.idea/
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# ------------------------------------------------------------------------------
+# OS Generated Files
+# ------------------------------------------------------------------------------
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+

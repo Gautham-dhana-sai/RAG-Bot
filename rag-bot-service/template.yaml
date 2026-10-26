@@ -1,0 +1,147 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: PersonaRAG - Serverless Multi-Tenant RAG Platform Infrastructure
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+  AiProvider:
+    Type: String
+    Default: mock
+    AllowedValues: [mock, openai]
+  OpenAIApiKey:
+    Type: String
+    NoEcho: true
+    Default: ''
+
+Globals:
+  Function:
+    Timeout: 30
+    MemorySize: 1024
+    Runtime: nodejs20.x
+    Architectures:
+      - arm64
+    Environment:
+      Variables:
+        NODE_ENV: production
+        STORAGE_ADAPTER: s3
+        S3_BUCKET_NAME: !Ref DocumentsBucket
+        QUEUE_ADAPTER: sqs
+        SQS_QUEUE_URL: !Ref IngestionQueue
+        AI_PROVIDER: !Ref AiProvider
+        OPENAI_API_KEY: !Ref OpenAIApiKey
+        DATABASE_URL: !Sub 'postgresql://${DBUser}:${DBPassword}@${DBProxy.Endpoint}:5432/personarag'
+
+Resources:
+  # -------------------------------------------------------------
+  # S3 Storage for Documents
+  # -------------------------------------------------------------
+  DocumentsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'personarag-docs-${Environment}-${AWS::AccountId}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  # -------------------------------------------------------------
+  # SQS Queue with Dead-Letter Queue for Ingestion
+  # -------------------------------------------------------------
+  IngestionDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub 'personarag-ingestion-dlq-${Environment}'
+      MessageRetentionPeriod: 1209600 # 14 days
+
+  IngestionQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub 'personarag-ingestion-queue-${Environment}'
+      VisibilityTimeout: 180
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt IngestionDeadLetterQueue.Arn
+        maxReceiveCount: 3
+
+  # -------------------------------------------------------------
+  # API Gateway HTTP API
+  # -------------------------------------------------------------
+  HttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: v1
+      CorsConfiguration:
+        AllowMethods:
+          - GET
+          - POST
+          - DELETE
+          - OPTIONS
+        AllowHeaders:
+          - Content-Type
+          - Authorization
+          - X-User-Id
+          - X-Tenant-Id
+        AllowOrigins:
+          - 'https://*'
+
+  # -------------------------------------------------------------
+  # API Lambda Function
+  # -------------------------------------------------------------
+  ApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: dist/lambda-bundle.zip
+      Handler: lambda.handler
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref DocumentsBucket
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt IngestionQueue.QueueName
+      Events:
+        ProxyApi:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /{proxy+}
+            Method: ANY
+
+  # -------------------------------------------------------------
+  # Ingestion SQS Worker Lambda Function
+  # -------------------------------------------------------------
+  IngestionWorkerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: dist/lambda-bundle.zip
+      Handler: lambda.sqsIngestionHandler
+      Timeout: 120
+      MemorySize: 2048
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref DocumentsBucket
+        - SQSPollerPolicy:
+            QueueName: !GetAtt IngestionQueue.QueueName
+      Events:
+        SqsTrigger:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt IngestionQueue.Arn
+            BatchSize: 5
+
+Outputs:
+  ApiEndpoint:
+    Description: HTTP API Gateway Endpoint URL
+    Value: !Sub 'https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com/v1'
+  DocumentsBucketArn:
+    Description: S3 Bucket ARN for uploaded documents
+    Value: !GetAtt DocumentsBucket.Arn
+  IngestionQueueUrl:
+    Description: SQS Ingestion Queue URL
+    Value: !Ref IngestionQueue
+

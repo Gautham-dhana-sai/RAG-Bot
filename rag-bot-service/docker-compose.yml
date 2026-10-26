@@ -1,0 +1,48 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: personarag-postgres
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: personarag
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d personarag"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  personarag-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: personarag-api
+    restart: on-failure
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: development
+      PORT: 3000
+      HOST: 0.0.0.0
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/personarag
+      AI_PROVIDER: mock
+      STORAGE_ADAPTER: local
+      LOCAL_STORAGE_DIR: /app/data/storage
+      QUEUE_ADAPTER: local
+      AUTH_SECRET: dev-persona-rag-secret-token-change-in-prod
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./data/storage:/app/data/storage
+
+volumes:
+  pgdata:
+

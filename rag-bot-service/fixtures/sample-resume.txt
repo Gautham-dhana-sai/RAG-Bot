@@ -1,0 +1,32 @@
+ALEX RIVERA
+Senior Distributed Systems Architect & Cloud AI Engineer
+Email: alex.rivera@example.com | Portfolio: alexrivera.dev | Location: Seattle, WA
+
+SUMMARY
+Senior engineer with 12+ years of experience designing fault-tolerant distributed platforms, high-throughput streaming systems, and multi-tenant RAG architectures. Specialized in Node.js, TypeScript, Go, PostgreSQL with pgvector, and AWS Serverless infrastructure.
+
+PROFESSIONAL EXPERIENCE
+
+Principal Cloud Architect — CloudScale AI Systems (2021 – Present)
+- Architected and delivered an enterprise-grade multi-tenant RAG service processing over 10M vector queries daily across 500+ corporate tenants with strict tenant isolation.
+- Implemented Reciprocal Rank Fusion (RRF) combining dense vector search (pgvector HNSW) and sparse lexical search (PostgreSQL tsvector), improving retrieval recall by 34%.
+- Designed zero-downtime database migration strategy for 1536-dimensional vector indexes and tenant-partitioned chunk storage.
+- Cut AWS Lambda cold-start latency by 68% using esbuild bundling, tree-shaking, and connection pooling with RDS Proxy.
+
+Senior Backend Engineer — DataPulse Analytics (2017 – 2021)
+- Led a team of 8 engineers building event-driven microservices processing 200,000 events/sec with Apache Kafka and AWS SQS.
+- Engineered high-throughput data extraction pipelines for unstructured PDF, DOCX, and markdown business documents.
+- Pioneered automated security testing suite preventing cross-tenant data leakage and citation hallucination in generative AI interfaces.
+
+Staff Software Engineer — Nexa Technologies (2013 – 2017)
+- Developed resilient REST and gRPC microservices using TypeScript, Node.js, and Docker.
+- Implemented automated CI/CD pipelines deploying to AWS ECS and Lambda using AWS CDK and SAM.
+
+PATENTS & CERTIFICATIONS
+- US Patent #10,482,912: Multi-tenant vector partitioning and access control in hybrid database indexes.
+- AWS Certified Solutions Architect – Professional (2023)
+- AWS Certified Security – Specialty (2022)
+
+EDUCATION
+Bachelor of Science in Computer Science, University of Washington (2009 – 2013)
+
