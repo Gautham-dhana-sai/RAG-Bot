@@ -72,5 +72,53 @@ describe('Auth & Onboarding Registration Flow', () => {
     expect(meBody.entities.length).toBe(1);
     expect(meBody.entities[0].name).toBe('Quantum Robotics Portfolio');
   });
+
+  it('supports registering with a username and signing in via username or email', async () => {
+    // 1. Register with username
+    const regRes = await app.inject({
+      method: 'POST',
+      url: '/v1/auth/register',
+      payload: {
+        username: 'devportal_lead',
+        email: 'lead@developerportal.tech',
+        password: 'securePassword123',
+        portalName: 'Developer Docs Portal',
+      },
+    });
+
+    expect(regRes.statusCode).toBe(201);
+    const regBody = JSON.parse(regRes.body);
+    expect(regBody.user.username).toBe('devportal_lead');
+
+    // 2. Sign in using username (identifier)
+    const loginUsernameRes = await app.inject({
+      method: 'POST',
+      url: '/v1/auth/login',
+      payload: {
+        identifier: 'devportal_lead',
+        password: 'securePassword123',
+      },
+    });
+
+    expect(loginUsernameRes.statusCode).toBe(200);
+    const loginUserBody = JSON.parse(loginUsernameRes.body);
+    expect(loginUserBody.token).toBeDefined();
+    expect(loginUserBody.user.username).toBe('devportal_lead');
+
+    // 3. Verify /v1/portals endpoint works with this session
+    const portalsRes = await app.inject({
+      method: 'GET',
+      url: '/v1/portals',
+      headers: {
+        authorization: `Bearer ${loginUserBody.token}`,
+      },
+    });
+
+    expect(portalsRes.statusCode).toBe(200);
+    const portals = JSON.parse(portalsRes.body);
+    expect(Array.isArray(portals)).toBe(true);
+    expect(portals.length).toBeGreaterThanOrEqual(1);
+    expect(portals[0].name).toBe('Developer Docs Portal');
+  });
 });
 

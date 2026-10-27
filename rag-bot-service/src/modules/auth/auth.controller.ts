@@ -12,14 +12,19 @@ export class AuthController {
 
   @Post('register')
   @HttpCode(HttpStatus.CREATED)
-  @ApiOperation({ summary: 'Register a new user, workspace (tenant), and portfolio (entity)' })
+  @ApiOperation({ summary: 'Register a new user, workspace (tenant), and portal (entity)' })
   async register(@Body() body: any) {
     const schema = z.object({
       name: z.string().optional(),
-      email: z.string().email('Valid email is required'),
+      username: z.string().min(2, 'Username must be at least 2 characters').optional(),
+      email: z.string().optional(),
+      identifier: z.string().optional(),
       password: z.string().min(6, 'Password must be at least 6 characters').optional(),
       workspaceName: z.string().optional(),
+      portalName: z.string().optional(),
       portfolioName: z.string().optional(),
+    }).refine(data => !!(data.username || data.email || data.identifier), {
+      message: 'Username or email is required',
     });
 
     const parsed = schema.safeParse(body);
@@ -32,11 +37,15 @@ export class AuthController {
 
   @Post('login')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Sign in by email or demo identity' })
+  @ApiOperation({ summary: 'Sign in by username or email' })
   async login(@Body() body: any) {
     const schema = z.object({
-      email: z.string().email('Valid email is required'),
+      identifier: z.string().optional(),
+      username: z.string().optional(),
+      email: z.string().optional(),
       password: z.string().optional(),
+    }).refine(data => !!(data.identifier || data.username || data.email), {
+      message: 'Username or email is required to sign in',
     });
 
     const parsed = schema.safeParse(body);

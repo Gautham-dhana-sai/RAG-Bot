@@ -135,6 +135,7 @@ export class PostgresDatabaseAdapter implements IDatabaseAdapter {
       id: r.id,
       email: r.email,
       name: r.name,
+      username: r.username,
       passwordHash: r.password_hash,
       salt: r.salt,
       isSuperadmin: r.is_superadmin,
@@ -144,13 +145,17 @@ export class PostgresDatabaseAdapter implements IDatabaseAdapter {
   }
 
   async getUserByEmail(email: string): Promise<User | null> {
-    const res = await this.pool.query('SELECT * FROM users WHERE email = $1', [email]);
+    const res = await this.pool.query(
+      'SELECT * FROM users WHERE LOWER(email) = LOWER($1) OR (username IS NOT NULL AND LOWER(username) = LOWER($1)) LIMIT 1',
+      [email.trim()]
+    );
     if (res.rows.length === 0) return null;
     const r = res.rows[0];
     return {
       id: r.id,
       email: r.email,
       name: r.name,
+      username: r.username,
       passwordHash: r.password_hash,
       salt: r.salt,
       isSuperadmin: r.is_superadmin,
@@ -159,25 +164,69 @@ export class PostgresDatabaseAdapter implements IDatabaseAdapter {
     };
   }
 
-  async createUser(data: { id?: string; email: string; name: string; passwordHash?: string; salt?: string; isSuperadmin?: boolean }): Promise<User> {
-    const id = data.id && isValidUuid(data.id) ? data.id : generateUuid();
+  async getUserByUsername(username: string): Promise<User | null> {
     const res = await this.pool.query(
-      `INSERT INTO users (id, email, name, password_hash, salt, is_superadmin)
-       VALUES ($1, $2, $3, $4, $5, $6)
+      'SELECT * FROM users WHERE username IS NOT NULL AND LOWER(username) = LOWER($1) LIMIT 1',
+      [username.trim()]
+    );
+    if (res.rows.length === 0) return null;
+    const r = res.rows[0];
+    return {
+      id: r.id,
+      email: r.email,
+      name: r.name,
+      username: r.username,
+      passwordHash: r.password_hash,
+      salt: r.salt,
+      isSuperadmin: r.is_superadmin,
+      createdAt: r.created_at,
+      updatedAt: r.updated_at,
+    };
+  }
+
+  async getUserByIdentifier(identifier: string): Promise<User | null> {
+    const clean = identifier.trim().toLowerCase();
+    const res = await this.pool.query(
+      'SELECT * FROM users WHERE LOWER(email) = $1 OR (username IS NOT NULL AND LOWER(username) = $1) LIMIT 1',
+      [clean]
+    );
+    if (res.rows.length === 0) return null;
+    const r = res.rows[0];
+    return {
+      id: r.id,
+      email: r.email,
+      name: r.name,
+      username: r.username,
+      passwordHash: r.password_hash,
+      salt: r.salt,
+      isSuperadmin: r.is_superadmin,
+      createdAt: r.created_at,
+      updatedAt: r.updated_at,
+    };
+  }
+
+  async createUser(data: { id?: string; email: string; name: string; username?: string; passwordHash?: string; salt?: string; isSuperadmin?: boolean }): Promise<User> {
+    const id = data.id && isValidUuid(data.id) ? data.id : generateUuid();
+    const cleanUsername = data.username?.trim().toLowerCase() || null;
+    const res = await this.pool.query(
+      `INSERT INTO users (id, email, name, username, password_hash, salt, is_superadmin)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
        ON CONFLICT (email) DO UPDATE SET
          name = EXCLUDED.name,
+         username = COALESCE(EXCLUDED.username, users.username),
          password_hash = COALESCE(EXCLUDED.password_hash, users.password_hash),
          salt = COALESCE(EXCLUDED.salt, users.salt),
          is_superadmin = EXCLUDED.is_superadmin,
          updated_at = NOW()
        RETURNING *`,
-      [id, data.email, data.name, data.passwordHash || null, data.salt || null, !!data.isSuperadmin]
+      [id, data.email, data.name, cleanUsername, data.passwordHash || null, data.salt || null, !!data.isSuperadmin]
     );
     const r = res.rows[0];
     return {
       id: r.id,
       email: r.email,
       name: r.name,
+      username: r.username,
       passwordHash: r.password_hash,
       salt: r.salt,
       isSuperadmin: r.is_superadmin,
@@ -239,7 +288,7 @@ export class PostgresDatabaseAdapter implements IDatabaseAdapter {
     };
   }
 
-  // Entities
+  // Entities & Portals
   async getEntityById(tenantId: string, entityId: string): Promise<Entity | null> {
     if (!isValidUuid(tenantId) || !isValidUuid(entityId)) return null;
     const res = await this.pool.query(
@@ -254,7 +303,8 @@ export class PostgresDatabaseAdapter implements IDatabaseAdapter {
       name: r.name,
       slug: r.slug,
       description: r.description,
-      portfolioUrl: r.portfolio_url,
+      portalUrl: r.portal_url || r.portfolio_url,
+      portfolioUrl: r.portfolio_url || r.portal_url,
       isPublic: r.is_public,
       createdAt: r.created_at,
       updatedAt: r.updated_at,
@@ -263,7 +313,7 @@ export class PostgresDatabaseAdapter implements IDatabaseAdapter {
 
   async getEntityByPortfolioUrl(portfolioUrl: string): Promise<Entity | null> {
     const res = await this.pool.query(
-      'SELECT * FROM entities WHERE LOWER(portfolio_url) = LOWER($1) LIMIT 1',
+      'SELECT * FROM entities WHERE LOWER(portfolio_url) = LOWER($1) OR LOWER(portal_url) = LOWER($1) LIMIT 1',
       [portfolioUrl]
     );
     if (res.rows.length === 0) return null;
@@ -274,18 +324,23 @@ export class PostgresDatabaseAdapter implements IDatabaseAdapter {
       name: r.name,
       slug: r.slug,
       description: r.description,
-      portfolioUrl: r.portfolio_url,
+      portalUrl: r.portal_url || r.portfolio_url,
+      portfolioUrl: r.portfolio_url || r.portal_url,
       isPublic: r.is_public,
       createdAt: r.created_at,
       updatedAt: r.updated_at,
     };
   }
 
+  async getEntityByPortalUrl(portalUrl: string): Promise<Entity | null> {
+    return this.getEntityByPortfolioUrl(portalUrl);
+  }
+
   async getEntityByReference(tenantId: string, reference: string): Promise<Entity | null> {
     const res = await this.pool.query(
       `SELECT * FROM entities 
        WHERE tenant_id = $1 
-         AND (id::text = $2 OR LOWER(slug) = LOWER($2) OR LOWER(portfolio_url) = LOWER($2))
+         AND (id::text = $2 OR LOWER(slug) = LOWER($2) OR LOWER(portfolio_url) = LOWER($2) OR LOWER(portal_url) = LOWER($2))
        LIMIT 1`,
       [tenantId, reference]
     );
@@ -297,7 +352,8 @@ export class PostgresDatabaseAdapter implements IDatabaseAdapter {
       name: r.name,
       slug: r.slug,
       description: r.description,
-      portfolioUrl: r.portfolio_url,
+      portalUrl: r.portal_url || r.portfolio_url,
+      portfolioUrl: r.portfolio_url || r.portal_url,
       isPublic: r.is_public,
       createdAt: r.created_at,
       updatedAt: r.updated_at,
@@ -313,26 +369,29 @@ export class PostgresDatabaseAdapter implements IDatabaseAdapter {
       name: r.name,
       slug: r.slug,
       description: r.description,
-      portfolioUrl: r.portfolio_url,
+      portalUrl: r.portal_url || r.portfolio_url,
+      portfolioUrl: r.portfolio_url || r.portal_url,
       isPublic: r.is_public,
       createdAt: r.created_at,
       updatedAt: r.updated_at,
     }));
   }
 
-  async createEntity(data: { id?: string; tenantId: string; name: string; slug: string; description?: string; portfolioUrl?: string; isPublic?: boolean }): Promise<Entity> {
+  async createEntity(data: { id?: string; tenantId: string; name: string; slug: string; description?: string; portalUrl?: string; portfolioUrl?: string; isPublic?: boolean }): Promise<Entity> {
     const id = data.id && isValidUuid(data.id) ? data.id : generateUuid();
+    const url = data.portalUrl || data.portfolioUrl || null;
     const res = await this.pool.query(
-      `INSERT INTO entities (id, tenant_id, name, slug, description, portfolio_url, is_public)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+      `INSERT INTO entities (id, tenant_id, name, slug, description, portal_url, portfolio_url, is_public)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        ON CONFLICT (tenant_id, slug) DO UPDATE SET
          name = EXCLUDED.name,
          description = COALESCE(EXCLUDED.description, entities.description),
+         portal_url = COALESCE(EXCLUDED.portal_url, entities.portal_url),
          portfolio_url = COALESCE(EXCLUDED.portfolio_url, entities.portfolio_url),
          is_public = EXCLUDED.is_public,
          updated_at = NOW()
        RETURNING *`,
-      [id, data.tenantId, data.name, data.slug, data.description || null, data.portfolioUrl || null, data.isPublic ?? false]
+      [id, data.tenantId, data.name, data.slug, data.description || null, url, url, data.isPublic ?? false]
     );
     const r = res.rows[0];
     return {
@@ -341,7 +400,8 @@ export class PostgresDatabaseAdapter implements IDatabaseAdapter {
       name: r.name,
       slug: r.slug,
       description: r.description,
-      portfolioUrl: r.portfolio_url,
+      portalUrl: r.portal_url || r.portfolio_url,
+      portfolioUrl: r.portfolio_url || r.portal_url,
       isPublic: r.is_public,
       createdAt: r.created_at,
       updatedAt: r.updated_at,

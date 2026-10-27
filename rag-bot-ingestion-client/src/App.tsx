@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { FileItem, IngestionJob, IngestionJobDocument, Portfolio, DocumentInfo } from './types';
+import { FileItem, IngestionJob, IngestionJobDocument, Portal, DocumentInfo } from './types';
 import { IngestionApiClient } from './api';
 import { FileDropZone } from './components/FileDropZone';
 import { JobStatusCard } from './components/JobStatusCard';
@@ -8,7 +8,8 @@ import './App.css';
 
 export interface QAHistoryItem {
   id: string;
-  portfolioId: string;
+  portalId: string;
+  portfolioId?: string; // backwards compatibility
   question: string;
   answer: string;
   citations: any[];
@@ -49,40 +50,43 @@ export function App() {
   const [apiUrl, setApiUrl] = useState(() => localStorage.getItem('ragbot_api_url') || 'http://localhost:3000');
   const [authToken, setAuthToken] = useState(() => localStorage.getItem('ragbot_token') || '');
   const [userEmail, setUserEmail] = useState(() => localStorage.getItem('ragbot_email') || '');
+  const [userName, setUserName] = useState(() => localStorage.getItem('ragbot_username') || '');
   const [workspaceName, setWorkspaceName] = useState(() => localStorage.getItem('ragbot_workspace') || '');
 
   // Auth UI state
   const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
+  const [authIdentifier, setAuthIdentifier] = useState('');
+  const [authUsername, setAuthUsername] = useState('');
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [isAuthLoading, setIsAuthLoading] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
 
-  // Portfolio Dashboard state
-  const [portfolios, setPortfolios] = useState<Portfolio[]>([]);
-  const [isLoadingPortfolios, setIsLoadingPortfolios] = useState(false);
-  const [portfolioError, setPortfolioError] = useState<string | null>(null);
-  const [selectedPortfolio, setSelectedPortfolio] = useState<Portfolio | null>(null);
+  // Portal Dashboard state
+  const [portals, setPortals] = useState<Portal[]>([]);
+  const [isLoadingPortals, setIsLoadingPortals] = useState(false);
+  const [portalError, setPortalError] = useState<string | null>(null);
+  const [selectedPortal, setSelectedPortal] = useState<Portal | null>(null);
 
-  // Add Portfolio Form state
-  const [newPortfolioUrl, setNewPortfolioUrl] = useState('');
-  const [newPortfolioName, setNewPortfolioName] = useState('');
-  const [isAddingPortfolio, setIsAddingPortfolio] = useState(false);
-  const [addPortfolioError, setAddPortfolioError] = useState<string | null>(null);
+  // Add Portal Form state
+  const [newPortalUrl, setNewPortalUrl] = useState('');
+  const [newPortalName, setNewPortalName] = useState('');
+  const [isAddingPortal, setIsAddingPortal] = useState(false);
+  const [addPortalError, setAddPortalError] = useState<string | null>(null);
 
-  // Portfolio Ingestion & Documents state
+  // Portal Ingestion & Documents state
   const [selectedFiles, setSelectedFiles] = useState<FileItem[]>([]);
   const [isSubmittingFiles, setIsSubmittingFiles] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [currentJob, setCurrentJob] = useState<IngestionJob | null>(null);
   const [jobDocuments, setJobDocuments] = useState<IngestionJobDocument[]>([]);
   const [isPollingJob, setIsPollingJob] = useState(false);
-  const [portfolioDocuments, setPortfolioDocuments] = useState<DocumentInfo[]>([]);
+  const [portalDocuments, setPortalDocuments] = useState<DocumentInfo[]>([]);
   const [isLoadingDocuments, setIsLoadingDocuments] = useState(false);
 
   // Quick verification Q&A state (isolated per login session)
-  const [queryText, setQueryText] = useState('What are the key technical skills and achievements mentioned in this portfolio?');
+  const [queryText, setQueryText] = useState('What is the primary purpose and core architecture explained in this portal?');
   const [isQuerying, setIsQuerying] = useState(false);
   const [pendingQuestion, setPendingQuestion] = useState<string | null>(null);
   const [showAllQuestions, setShowAllQuestions] = useState(false);
@@ -106,9 +110,9 @@ export function App() {
     }
   }, [qaHistory]);
 
-  // Delete Portfolio state
-  const [portfolioToDelete, setPortfolioToDelete] = useState<Portfolio | null>(null);
-  const [isDeletingPortfolio, setIsDeletingPortfolio] = useState(false);
+  // Delete Portal state
+  const [portalToDelete, setPortalToDelete] = useState<Portal | null>(null);
+  const [isDeletingPortal, setIsDeletingPortal] = useState(false);
   const [deleteSuccessMessage, setDeleteSuccessMessage] = useState<string | null>(null);
 
   // Advanced settings toggle
@@ -142,6 +146,14 @@ export function App() {
   }, [userEmail]);
 
   useEffect(() => {
+    if (userName) {
+      localStorage.setItem('ragbot_username', userName);
+    } else {
+      localStorage.removeItem('ragbot_username');
+    }
+  }, [userName]);
+
+  useEffect(() => {
     if (workspaceName) {
       localStorage.setItem('ragbot_workspace', workspaceName);
     } else {
@@ -159,9 +171,10 @@ export function App() {
     }
     setAuthToken('');
     setUserEmail('');
+    setUserName('');
     setWorkspaceName('');
-    setPortfolios([]);
-    setSelectedPortfolio(null);
+    setPortals([]);
+    setSelectedPortal(null);
     setCurrentJob(null);
     setSelectedFiles([]);
     setQaHistory([]);
@@ -173,6 +186,7 @@ export function App() {
     }
     localStorage.removeItem('ragbot_token');
     localStorage.removeItem('ragbot_email');
+    localStorage.removeItem('ragbot_username');
     localStorage.removeItem('ragbot_workspace');
   }, [getClient]);
 
@@ -186,25 +200,25 @@ export function App() {
     return () => window.removeEventListener('ragbot:session_expired', onSessionExpired);
   }, [handleLogout]);
 
-  // Load portfolios when authenticated
-  const loadPortfolios = useCallback(async () => {
+  // Load portals when authenticated
+  const loadPortals = useCallback(async () => {
     if (!authToken) return;
-    setIsLoadingPortfolios(true);
-    setPortfolioError(null);
+    setIsLoadingPortals(true);
+    setPortalError(null);
     try {
       const client = getClient();
-      const list = await client.listPortfolios();
-      setPortfolios(list);
+      const list = await client.listPortals();
+      setPortals(list);
     } catch (err: any) {
       // If unauthorized, session may have expired
       if (err.message?.toLowerCase().includes('unauthorized') || err.message?.toLowerCase().includes('expired')) {
         handleLogout();
         setAuthError('Your session has expired. Please sign in again.');
       } else {
-        setPortfolioError(err.message || 'Failed to fetch portfolios');
+        setPortalError(err.message || 'Failed to fetch portals');
       }
     } finally {
-      setIsLoadingPortfolios(false);
+      setIsLoadingPortals(false);
     }
   }, [authToken, getClient, handleLogout]);
 
@@ -215,13 +229,16 @@ export function App() {
       client
         .getMe()
         .then(res => {
+          if (res.user?.username) {
+            setUserName(res.user.username);
+          }
           if (res.user?.email) {
             setUserEmail(res.user.email);
           }
           if (res.tenant?.name) {
             setWorkspaceName(res.tenant.name);
           }
-          loadPortfolios();
+          loadPortals();
         })
         .catch(() => {
           handleLogout();
@@ -230,14 +247,14 @@ export function App() {
     }
   }, []);
 
-  // Refresh document list when portfolio is selected
-  const loadPortfolioDocuments = useCallback(
-    async (portfolioRef: string) => {
+  // Refresh document list when portal is selected
+  const loadPortalDocuments = useCallback(
+    async (portalRef: string) => {
       setIsLoadingDocuments(true);
       try {
         const client = getClient();
-        const docs = await client.getPortfolioDocuments(portfolioRef);
-        setPortfolioDocuments(docs);
+        const docs = await client.getPortalDocuments(portalRef);
+        setPortalDocuments(docs);
       } catch {
         // Ignore fallback
       } finally {
@@ -248,10 +265,10 @@ export function App() {
   );
 
   useEffect(() => {
-    if (selectedPortfolio) {
-      loadPortfolioDocuments(selectedPortfolio.id);
+    if (selectedPortal) {
+      loadPortalDocuments(selectedPortal.id);
     }
-  }, [selectedPortfolio, loadPortfolioDocuments]);
+  }, [selectedPortal, loadPortalDocuments]);
 
   // Handle Auth submission (login or signup)
   const handleAuthSubmit = async (e: React.FormEvent) => {
@@ -264,18 +281,22 @@ export function App() {
       let res;
       if (authMode === 'signup') {
         res = await client.register({
-          email: authEmail,
+          username: authUsername.trim() || undefined,
+          email: authEmail.trim(),
           password: authPassword,
         });
       } else {
         res = await client.login({
-          email: authEmail,
+          identifier: authIdentifier.trim(),
           password: authPassword,
         });
       }
 
       setAuthToken(res.token);
-      setUserEmail(res.user?.email || authEmail);
+      if (res.user?.username) {
+        setUserName(res.user.username);
+      }
+      setUserEmail(res.user?.email || authEmail || authIdentifier);
       setWorkspaceName(res.tenant?.name || 'My Workspace');
       setAuthPassword('');
       setAuthError(null);
@@ -289,14 +310,15 @@ export function App() {
         // ignore
       }
 
-      // Load initial portfolios
+      // Load initial portals
       if (Array.isArray(res.entities)) {
-        setPortfolios(
+        setPortals(
           res.entities.map((e: any) => ({
             id: e.id,
             name: e.name,
             slug: e.slug,
-            portfolioUrl: e.portfolioUrl,
+            portalUrl: e.portalUrl || e.portfolioUrl,
+            portfolioUrl: e.portfolioUrl || e.portalUrl,
             isPublic: e.isPublic,
             documentCount: 0,
             createdAt: e.createdAt,
@@ -304,7 +326,7 @@ export function App() {
           }))
         );
       } else {
-        setTimeout(loadPortfolios, 300);
+        setTimeout(loadPortals, 300);
       }
     } catch (err: any) {
       setAuthError(err.message || 'Authentication failed. Please verify credentials.');
@@ -313,69 +335,69 @@ export function App() {
     }
   };
 
-  // Add Portfolio by URL
-  const handleAddPortfolio = async (e: React.FormEvent) => {
+  // Add Portal by URL
+  const handleAddPortal = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newPortfolioUrl.trim()) return;
+    if (!newPortalUrl.trim()) return;
 
-    setIsAddingPortfolio(true);
-    setAddPortfolioError(null);
+    setIsAddingPortal(true);
+    setAddPortalError(null);
 
     try {
       const client = getClient();
-      const created = await client.createPortfolio(newPortfolioUrl.trim(), newPortfolioName.trim() || undefined);
-      setNewPortfolioUrl('');
-      setNewPortfolioName('');
+      const created = await client.createPortal(newPortalUrl.trim(), newPortalName.trim() || undefined);
+      setNewPortalUrl('');
+      setNewPortalName('');
 
       // Update list or select created
-      await loadPortfolios();
-      setSelectedPortfolio(created);
+      await loadPortals();
+      setSelectedPortal(created);
     } catch (err: any) {
-      setAddPortfolioError(err.message || 'Failed to create portfolio. Please check the URL.');
+      setAddPortalError(err.message || 'Failed to create portal. Please check the URL.');
     } finally {
-      setIsAddingPortfolio(false);
+      setIsAddingPortal(false);
     }
   };
 
-  // Delete Portfolio & S3 Files handler
-  const handleConfirmDeletePortfolio = async () => {
-    if (!portfolioToDelete) return;
-    setIsDeletingPortfolio(true);
-    setPortfolioError(null);
+  // Delete Portal & S3 Files handler
+  const handleConfirmDeletePortal = async () => {
+    if (!portalToDelete) return;
+    setIsDeletingPortal(true);
+    setPortalError(null);
     try {
       const client = getClient();
-      const res = await client.deletePortfolio(portfolioToDelete.id);
+      const res = await client.deletePortal(portalToDelete.id);
       setDeleteSuccessMessage(
-        res.message || `Portfolio "${portfolioToDelete.name}" and associated S3 files were deleted.`
+        res.message || `Portal "${portalToDelete.name}" and associated S3 files were deleted.`
       );
 
-      if (selectedPortfolio?.id === portfolioToDelete.id) {
-        setSelectedPortfolio(null);
+      if (selectedPortal?.id === portalToDelete.id) {
+        setSelectedPortal(null);
         setCurrentJob(null);
         setJobDocuments([]);
         setSelectedFiles([]);
       }
 
-      setPortfolioToDelete(null);
-      await loadPortfolios();
+      setPortalToDelete(null);
+      await loadPortals();
       setTimeout(() => setDeleteSuccessMessage(null), 5000);
     } catch (err: any) {
-      setPortfolioError(err.message || 'Failed to delete portfolio and storage files.');
+      setPortalError(err.message || 'Failed to delete portal and storage files.');
     } finally {
-      setIsDeletingPortfolio(false);
+      setIsDeletingPortal(false);
     }
   };
 
   // Ingestion job polling
   const startJobPolling = useCallback(
-    (portfolioRef: string, jobId: string) => {
+    (portalRef: string, jobId: string) => {
       setIsPollingJob(true);
       if (pollingTimerRef.current) clearInterval(pollingTimerRef.current);
 
       const poll = async () => {
         try {
           const client = getClient();
-          const job = await client.getPortfolioJobStatus(portfolioRef, jobId);
+          const job = await client.getPortalJobStatus(portalRef, jobId);
           setCurrentJob(job);
 
           if (job.documents) {
@@ -385,9 +407,9 @@ export function App() {
           if (job.status === 'READY' || job.status === 'FAILED') {
             setIsPollingJob(false);
             if (pollingTimerRef.current) clearInterval(pollingTimerRef.current);
-            // Refresh documents and portfolio counts
-            loadPortfolioDocuments(portfolioRef);
-            loadPortfolios();
+            // Refresh documents and portal counts
+            loadPortalDocuments(portalRef);
+            loadPortals();
           }
         } catch {
           setIsPollingJob(false);
@@ -398,7 +420,7 @@ export function App() {
       poll();
       pollingTimerRef.current = setInterval(poll, 1500);
     },
-    [getClient, loadPortfolioDocuments, loadPortfolios]
+    [getClient, loadPortalDocuments, loadPortals]
   );
 
   useEffect(() => {
@@ -407,9 +429,9 @@ export function App() {
     };
   }, []);
 
-  // Submit files to selected portfolio
+  // Submit files to selected portal
   const handleSubmitFiles = async () => {
-    if (!selectedPortfolio || selectedFiles.length === 0) return;
+    if (!selectedPortal || selectedFiles.length === 0) return;
 
     setIsSubmittingFiles(true);
     setUploadError(null);
@@ -417,11 +439,11 @@ export function App() {
     try {
       const client = getClient();
       const rawFiles = selectedFiles.map(f => f.file);
-      const res = await client.submitPortfolioFiles(selectedPortfolio.id, rawFiles);
+      const res = await client.submitPortalFiles(selectedPortal.id, rawFiles);
 
       const jobId = res.jobId || res.id;
       if (jobId) {
-        startJobPolling(selectedPortfolio.id, jobId);
+        startJobPolling(selectedPortal.id, jobId);
       }
       setSelectedFiles([]);
     } catch (err: any) {
@@ -435,7 +457,7 @@ export function App() {
   const handleAskQuestion = async (e: React.FormEvent) => {
     e.preventDefault();
     const questionToAsk = queryText.trim();
-    if (!selectedPortfolio || !questionToAsk || isQuerying) return;
+    if (!selectedPortal || !questionToAsk || isQuerying) return;
 
     setIsQuerying(true);
     setPendingQuestion(questionToAsk);
@@ -447,14 +469,15 @@ export function App() {
     try {
       const client = getClient();
       const res = await client.askQuestion(
-        selectedPortfolio.tenantId || '',
-        selectedPortfolio.id,
+        selectedPortal.tenantId || '',
+        selectedPortal.id,
         questionToAsk
       );
 
       const newItem: QAHistoryItem = {
         id: itemId,
-        portfolioId: selectedPortfolio.id,
+        portalId: selectedPortal.id,
+        portfolioId: selectedPortal.id,
         question: questionToAsk,
         answer: cleanDocCitationTags(res.answer),
         citations: res.citations || [],
@@ -467,7 +490,8 @@ export function App() {
     } catch (err: any) {
       const errorItem: QAHistoryItem = {
         id: itemId,
-        portfolioId: selectedPortfolio.id,
+        portalId: selectedPortal.id,
+        portfolioId: selectedPortal.id,
         question: questionToAsk,
         answer: `Query error: ${err.message || 'Failed to generate answer'}`,
         citations: [],
@@ -483,8 +507,8 @@ export function App() {
   };
 
   const handleClearHistory = () => {
-    if (!selectedPortfolio) return;
-    setQaHistory(prev => prev.filter(item => item.portfolioId !== selectedPortfolio.id));
+    if (!selectedPortal) return;
+    setQaHistory(prev => prev.filter(item => item.portalId !== selectedPortal.id && item.portfolioId !== selectedPortal.id));
   };
 
   const handlePickPrompt = (prompt: string) => {
@@ -500,9 +524,9 @@ export function App() {
         <div className="auth-card">
           <div className="auth-brand">
             <span className="brand-badge">PersonaRAG</span>
-            <h2>Portfolio Ingestion Portal</h2>
+            <h2>RAG Portal Studio</h2>
             <p className="auth-subtitle">
-              Upload and index your career documents for conversational retrieval.
+              Connect any portal, product documentation, website, or knowledge base — index documents to empower high-accuracy grounded conversational AI.
             </p>
           </div>
 
@@ -536,19 +560,51 @@ export function App() {
           )}
 
           <form onSubmit={handleAuthSubmit} className="auth-form">
-            <div className="form-group">
-              <label htmlFor="auth-email">Email Address</label>
-              <input
-                id="auth-email"
-                type="email"
-                required
-                placeholder="you@example.com"
-                value={authEmail}
-                onChange={e => setAuthEmail(e.target.value)}
-                disabled={isAuthLoading}
-                autoFocus
-              />
-            </div>
+            {authMode === 'login' ? (
+              <div className="form-group">
+                <label htmlFor="auth-identifier">Username or Email</label>
+                <input
+                  id="auth-identifier"
+                  type="text"
+                  required
+                  placeholder="username or you@example.com"
+                  value={authIdentifier}
+                  onChange={e => setAuthIdentifier(e.target.value)}
+                  disabled={isAuthLoading}
+                  autoFocus
+                />
+              </div>
+            ) : (
+              <>
+                <div className="form-group">
+                  <label htmlFor="auth-username">Username</label>
+                  <input
+                    id="auth-username"
+                    type="text"
+                    required
+                    placeholder="e.g. johndoe"
+                    value={authUsername}
+                    onChange={e => setAuthUsername(e.target.value)}
+                    disabled={isAuthLoading}
+                    minLength={2}
+                    autoFocus
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label htmlFor="auth-email">Email Address</label>
+                  <input
+                    id="auth-email"
+                    type="email"
+                    required
+                    placeholder="you@example.com"
+                    value={authEmail}
+                    onChange={e => setAuthEmail(e.target.value)}
+                    disabled={isAuthLoading}
+                  />
+                </div>
+              </>
+            )}
 
             <div className="form-group">
               <label htmlFor="auth-password">Password</label>
@@ -619,13 +675,16 @@ export function App() {
       {/* Top Navigation */}
       <header className="portal-navbar">
         <div className="nav-brand">
-          <span className="brand-logo">📁</span>
-          <span className="brand-title">PersonaRAG Ingestion</span>
+          <span className="brand-logo">🌐</span>
+          <span className="brand-title">PersonaRAG Portals</span>
           {workspaceName && <span className="workspace-pill">{workspaceName}</span>}
         </div>
 
         <div className="nav-user">
-          <span className="user-email">{userEmail}</span>
+          <span className="user-email">
+            {userName && <strong style={{ color: 'var(--text)', marginRight: '0.35rem' }}>@{userName}</strong>}
+            {userEmail && <span style={{ opacity: 0.85 }}>({userEmail})</span>}
+          </span>
           <button type="button" className="btn-secondary btn-sm" onClick={handleLogout}>
             Sign Out
           </button>
@@ -634,24 +693,24 @@ export function App() {
 
       <main className="portal-main">
         {/* ======================================================== */}
-        {/* VIEW A: Portfolios Dashboard (when no portfolio is active) */}
+        {/* VIEW A: Portals Dashboard (when no portal is active)     */}
         {/* ======================================================== */}
-        {!selectedPortfolio ? (
+        {!selectedPortal ? (
           <div className="dashboard-container">
             <div className="dashboard-header">
               <div>
-                <h2>Your Career Portfolios</h2>
+                <h2>Your Portals & Knowledge Bases</h2>
                 <p className="subtitle">
-                  Select a portfolio to manage documents and ingest career knowledge, or register a new one by URL.
+                  Select a portal to manage documents and knowledge retrieval, or register a new portal or website by URL.
                 </p>
               </div>
               <button
                 type="button"
                 className="btn-secondary btn-sm"
-                onClick={loadPortfolios}
-                disabled={isLoadingPortfolios}
+                onClick={loadPortals}
+                disabled={isLoadingPortals}
               >
-                ↻ Refresh List
+                ↻ Refresh Portals
               </button>
             </div>
 
@@ -661,122 +720,125 @@ export function App() {
               </div>
             )}
 
-            {portfolioError && (
+            {portalError && (
               <div className="alert alert-error">
-                ✕ {portfolioError}
+                ✕ {portalError}
               </div>
             )}
 
-            {/* Register New Portfolio by URL */}
-            <div className="card add-portfolio-card">
-              <h3>+ Register New Portfolio by URL</h3>
+            {/* Register New Portal by URL */}
+            <div className="card add-portal-card add-portfolio-card">
+              <h3>+ Register New Portal / Website</h3>
               <p className="form-hint">
-                Enter your public portfolio website or profile link (e.g., <code>https://portfolio.dev/alex</code>).
+                Enter any website, documentation hub, product portal, or web link (e.g., <code>https://docs.mycompany.com</code> or <code>https://myportal.io</code>).
               </p>
 
-              {addPortfolioError && (
+              {addPortalError && (
                 <div className="alert alert-error">
-                  ✕ {addPortfolioError}
+                  ✕ {addPortalError}
                 </div>
               )}
 
-              <form onSubmit={handleAddPortfolio} className="add-portfolio-form">
+              <form onSubmit={handleAddPortal} className="add-portal-form add-portfolio-form">
                 <div className="form-row">
                   <div className="form-group flex-2">
-                    <label>Portfolio URL *</label>
+                    <label>Portal URL / Website *</label>
                     <input
                       type="text"
                       required
-                      placeholder="https://myportfolio.io/alex"
-                      value={newPortfolioUrl}
-                      onChange={e => setNewPortfolioUrl(e.target.value)}
-                      disabled={isAddingPortfolio}
+                      placeholder="https://docs.mycompany.com"
+                      value={newPortalUrl}
+                      onChange={e => setNewPortalUrl(e.target.value)}
+                      disabled={isAddingPortal}
                     />
                   </div>
                   <div className="form-group flex-1">
-                    <label>Display Name (Optional)</label>
+                    <label>Portal Name (Optional)</label>
                     <input
                       type="text"
-                      placeholder="e.g., Alex Chen - Principal Architect"
-                      value={newPortfolioName}
-                      onChange={e => setNewPortfolioName(e.target.value)}
-                      disabled={isAddingPortfolio}
+                      placeholder="e.g., Acme Cloud Platform Docs"
+                      value={newPortalName}
+                      onChange={e => setNewPortalName(e.target.value)}
+                      disabled={isAddingPortal}
                     />
                   </div>
                   <div className="form-group btn-align">
-                    <button type="submit" className="btn-primary" disabled={isAddingPortfolio || !newPortfolioUrl.trim()}>
-                      {isAddingPortfolio ? 'Registering...' : 'Register Portfolio'}
+                    <button type="submit" className="btn-primary" disabled={isAddingPortal || !newPortalUrl.trim()}>
+                      {isAddingPortal ? 'Registering...' : 'Register Portal'}
                     </button>
                   </div>
                 </div>
               </form>
             </div>
 
-            {/* Portfolios Grid */}
-            <div className="portfolios-section">
-              <h3>Registered Portfolios ({portfolios.length})</h3>
+            {/* Portals Grid */}
+            <div className="portals-section portfolios-section">
+              <h3>Registered Portals ({portals.length})</h3>
 
-              {isLoadingPortfolios ? (
-                <div className="loading-state">Loading your portfolios...</div>
-              ) : portfolios.length === 0 ? (
+              {isLoadingPortals ? (
+                <div className="loading-state">Loading your portals...</div>
+              ) : portals.length === 0 ? (
                 <div className="empty-state">
-                  <p>No portfolios found. Add your portfolio URL above to get started.</p>
+                  <p>No portals found. Register a portal URL above to get started.</p>
                 </div>
               ) : (
-                <div className="portfolios-grid">
-                  {portfolios.map(p => (
-                    <div key={p.id} className="portfolio-card">
-                      <div className="portfolio-card-header">
-                        <h4>{p.name}</h4>
-                        <span className="doc-count-badge">
-                          📄 {p.documentCount} {p.documentCount === 1 ? 'doc' : 'docs'}
-                        </span>
-                      </div>
-
-                      {p.portfolioUrl ? (
-                        <div className="portfolio-url-link">
-                          <a href={p.portfolioUrl} target="_blank" rel="noopener noreferrer">
-                            🔗 {p.portfolioUrl}
-                          </a>
+                <div className="portals-grid portfolios-grid">
+                  {portals.map(p => {
+                    const displayUrl = p.portalUrl || p.portfolioUrl;
+                    return (
+                      <div key={p.id} className="portal-card portfolio-card">
+                        <div className="portal-card-header portfolio-card-header">
+                          <h4>{p.name}</h4>
+                          <span className="doc-count-badge">
+                            📄 {p.documentCount} {p.documentCount === 1 ? 'doc' : 'docs'}
+                          </span>
                         </div>
-                      ) : (
-                        <div className="portfolio-url-empty">Default Portfolio</div>
-                      )}
 
-                      <div className="portfolio-card-footer">
-                        <span className="portfolio-date">
-                          Created {new Date(p.createdAt).toLocaleDateString()}
-                        </span>
-                        <div className="portfolio-card-actions">
-                          <button
-                            type="button"
-                            className="btn-danger-outline btn-sm"
-                            title="Delete portfolio, documents, and S3 folder"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setPortfolioToDelete(p);
-                            }}
-                          >
-                            🗑 Delete
-                          </button>
-                          <button
-                            type="button"
-                            className="btn-primary btn-sm"
-                            onClick={() => setSelectedPortfolio(p)}
-                          >
-                            Open Workspace →
-                          </button>
+                        {displayUrl ? (
+                          <div className="portal-url-link portfolio-url-link">
+                            <a href={displayUrl} target="_blank" rel="noopener noreferrer">
+                              🔗 {displayUrl}
+                            </a>
+                          </div>
+                        ) : (
+                          <div className="portal-url-empty portfolio-url-empty">Default Portal</div>
+                        )}
+
+                        <div className="portal-card-footer portfolio-card-footer">
+                          <span className="portal-date portfolio-date">
+                            Created {new Date(p.createdAt).toLocaleDateString()}
+                          </span>
+                          <div className="portal-card-actions portfolio-card-actions">
+                            <button
+                              type="button"
+                              className="btn-danger-outline btn-sm"
+                              title="Delete portal, documents, and S3 folder"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setPortalToDelete(p);
+                              }}
+                            >
+                              🗑 Delete
+                            </button>
+                            <button
+                              type="button"
+                              className="btn-primary btn-sm"
+                              onClick={() => setSelectedPortal(p)}
+                            >
+                              Open Workspace →
+                            </button>
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </div>
           </div>
         ) : (
           /* ======================================================== */
-          /* VIEW B: Portfolio Ingestion Workspace (when selected)   */
+          /* VIEW B: Portal Ingestion Workspace (when selected)      */
           /* ======================================================== */
           <div className="workspace-container">
             <div className="workspace-header">
@@ -784,26 +846,26 @@ export function App() {
                 type="button"
                 className="btn-link btn-back"
                 onClick={() => {
-                  setSelectedPortfolio(null);
+                  setSelectedPortal(null);
                   setCurrentJob(null);
                   setJobDocuments([]);
                   setSelectedFiles([]);
-                  loadPortfolios();
+                  loadPortals();
                 }}
               >
-                ← Back to Portfolios
+                ← Back to Portals
               </button>
 
-              <div className="portfolio-title-group">
-                <h2>{selectedPortfolio.name}</h2>
-                {selectedPortfolio.portfolioUrl && (
+              <div className="portal-title-group portfolio-title-group">
+                <h2>{selectedPortal.name}</h2>
+                {(selectedPortal.portalUrl || selectedPortal.portfolioUrl) && (
                   <a
-                    href={selectedPortfolio.portfolioUrl}
+                    href={selectedPortal.portalUrl || selectedPortal.portfolioUrl}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="portfolio-external-link"
+                    className="portal-external-link portfolio-external-link"
                   >
-                    🔗 {selectedPortfolio.portfolioUrl} ↗
+                    🔗 {selectedPortal.portalUrl || selectedPortal.portfolioUrl} ↗
                   </a>
                 )}
               </div>
@@ -812,10 +874,10 @@ export function App() {
                 <button
                   type="button"
                   className="btn-danger-outline btn-sm"
-                  title="Delete this portfolio, indexed knowledge, and S3 folder"
-                  onClick={() => setPortfolioToDelete(selectedPortfolio)}
+                  title="Delete this portal, indexed knowledge, and S3 folder"
+                  onClick={() => setPortalToDelete(selectedPortal)}
                 >
-                  🗑 Delete Portfolio & S3
+                  🗑 Delete Portal & S3
                 </button>
               </div>
             </div>
@@ -826,7 +888,7 @@ export function App() {
                 <div className="card">
                   <h3>Submit Documents for Ingestion</h3>
                   <p className="form-hint">
-                    Upload resumes, whitepapers, project summaries, or technical documentation. Extracted text will be automatically indexed into pgvector for conversational retrieval.
+                    Upload technical specifications, documentation, whitepapers, manuals, or project files. Extracted text will be automatically indexed into pgvector for high-accuracy grounded retrieval.
                   </p>
 
                   <FileDropZone
@@ -857,9 +919,9 @@ export function App() {
                 {currentJob && (
                   <JobStatusCard
                     job={currentJob}
-                    statusUrl={`/v1/portfolios/${selectedPortfolio.id}/ingestion-jobs/${currentJob.id}`}
+                    statusUrl={`/v1/portals/${selectedPortal.id}/ingestion-jobs/${currentJob.id}`}
                     isPolling={isPollingJob}
-                    onRefresh={() => startJobPolling(selectedPortfolio.id, currentJob.id)}
+                    onRefresh={() => startJobPolling(selectedPortal.id, currentJob.id)}
                   />
                 )}
 
@@ -870,19 +932,19 @@ export function App() {
                 <div className="card qa-verification-card">
                   <div className="qa-card-header">
                     <div>
-                      <h3>Verify Portfolio Retrieval</h3>
+                      <h3>Verify Portal Retrieval</h3>
                       <p className="form-hint">
                         Ask questions against indexed documents to verify semantic retrieval and grounded answer synthesis.
                       </p>
                     </div>
-                    {qaHistory.filter(item => item.portfolioId === selectedPortfolio.id).length > 0 && (
+                    {qaHistory.filter(item => (item.portalId || item.portfolioId) === selectedPortal.id).length > 0 && (
                       <button
                         type="button"
                         className="btn-text btn-clear-history"
                         onClick={handleClearHistory}
-                        title="Clear conversation history for this portfolio"
+                        title="Clear conversation history for this portal"
                       >
-                        🗑️ Clear History ({qaHistory.filter(item => item.portfolioId === selectedPortfolio.id).length})
+                        🗑️ Clear History ({qaHistory.filter(item => (item.portalId || item.portfolioId) === selectedPortal.id).length})
                       </button>
                     )}
                   </div>
@@ -893,7 +955,7 @@ export function App() {
                       className="qa-input"
                       value={queryText}
                       onChange={e => setQueryText(e.target.value)}
-                      placeholder="Ask a question about this portfolio (e.g. skills, experience, project achievements)..."
+                      placeholder="Ask a question about this portal (e.g. architecture, API specs, core features, workflows)..."
                       disabled={isQuerying}
                     />
                     <button
@@ -906,29 +968,29 @@ export function App() {
                   </form>
 
                   {/* Quick suggestion prompt chips if no history yet */}
-                  {qaHistory.filter(item => item.portfolioId === selectedPortfolio.id).length === 0 && !isQuerying && (
+                  {qaHistory.filter(item => (item.portalId || item.portfolioId) === selectedPortal.id).length === 0 && !isQuerying && (
                     <div className="qa-prompt-suggestions">
                       <span className="suggestions-label">Try asking:</span>
                       <button
                         type="button"
                         className="prompt-chip"
-                        onClick={() => handlePickPrompt('What are the primary technical skills and tools highlighted in this portfolio?')}
+                        onClick={() => handlePickPrompt('Summarize the primary purpose, architecture, and core capabilities of this portal.')}
                       >
-                        💡 Technical skills & tools
+                        💡 Architecture & overview
                       </button>
                       <button
                         type="button"
                         className="prompt-chip"
-                        onClick={() => handlePickPrompt('Summarize the most significant project achievements and architectural decisions.')}
+                        onClick={() => handlePickPrompt('What are the key technical components, data flows, and workflows detailed in the indexed documents?')}
                       >
-                        🏆 Key project achievements
+                        ⚙️ Technical workflows
                       </button>
                       <button
                         type="button"
                         className="prompt-chip"
-                        onClick={() => handlePickPrompt('What is the candidate\'s leadership experience and team impact?')}
+                        onClick={() => handlePickPrompt("List the setup requirements, configuration steps, and integration guides explained in this portal's knowledge base.")}
                       >
-                        👥 Leadership & impact
+                        📋 Setup & integration
                       </button>
                     </div>
                   )}
@@ -941,7 +1003,7 @@ export function App() {
                         <div className="qa-bubble qa-question-bubble">
                           <div className="qa-bubble-header">
                             <span className="qa-bubble-role">
-                              <span className="qa-role-icon">👤</span> Pending Question #{qaHistory.filter(item => item.portfolioId === selectedPortfolio.id).length + 1}
+                              <span className="qa-role-icon">👤</span> Pending Question #{qaHistory.filter(item => (item.portalId || item.portfolioId) === selectedPortal.id).length + 1}
                             </span>
                             <span className="qa-timestamp">Evaluating...</span>
                           </div>
@@ -966,22 +1028,22 @@ export function App() {
                     )}
 
                     {(() => {
-                      const portfolioHistory = qaHistory.filter(item => item.portfolioId === selectedPortfolio.id);
-                      const visibleHistory = showAllQuestions ? portfolioHistory : portfolioHistory.slice(0, 2);
-                      const hiddenCount = portfolioHistory.length - 2;
+                      const portalHistory = qaHistory.filter(item => (item.portalId || item.portfolioId) === selectedPortal.id);
+                      const visibleHistory = showAllQuestions ? portalHistory : portalHistory.slice(0, 2);
+                      const hiddenCount = portalHistory.length - 2;
 
                       return (
                         <>
                           {visibleHistory.map((item) => {
-                            const absoluteIndex = portfolioHistory.findIndex(h => h.id === item.id);
-                            const questionNum = portfolioHistory.length - (absoluteIndex >= 0 ? absoluteIndex : 0);
+                            const absoluteIndex = portalHistory.findIndex(h => h.id === item.id);
+                            const questionNum = portalHistory.length - (absoluteIndex >= 0 ? absoluteIndex : 0);
                             const isLatest = absoluteIndex === 0;
 
                             return (
                               <div key={item.id} className={`qa-history-thread-item ${item.isError ? 'qa-item-error' : ''}`}>
                                 {/* Question */}
                                 <div className="qa-bubble qa-question-bubble">
-                                  <div className="qa-bubble-header">
+                                   <div className="qa-bubble-header">
                                     <span className="qa-bubble-role">
                                       <span className="qa-role-icon">👤</span> Question #{questionNum} {isLatest ? '(Latest)' : ''}
                                     </span>
@@ -1060,29 +1122,29 @@ export function App() {
               <div className="workspace-col-side">
                 <div className="card side-docs-card">
                   <div className="side-docs-header">
-                    <h3>Portfolio Knowledge Base</h3>
+                    <h3>Portal Knowledge Base</h3>
                     <button
                       type="button"
                       className="btn-secondary btn-xs"
-                      onClick={() => loadPortfolioDocuments(selectedPortfolio.id)}
+                      onClick={() => loadPortalDocuments(selectedPortal.id)}
                       disabled={isLoadingDocuments}
                     >
                       ↻
                     </button>
                   </div>
                   <p className="form-hint">
-                    {portfolioDocuments.length} document(s) indexed for this portfolio.
+                    {portalDocuments.length} document(s) indexed for this portal.
                   </p>
 
                   {isLoadingDocuments ? (
                     <div className="loading-state">Loading indexed files...</div>
-                  ) : portfolioDocuments.length === 0 ? (
+                  ) : portalDocuments.length === 0 ? (
                     <div className="empty-state-small">
                       No documents indexed yet. Upload files to start.
                     </div>
                   ) : (
                     <ul className="side-doc-list">
-                      {portfolioDocuments.map(doc => (
+                      {portalDocuments.map(doc => (
                         <li key={doc.id} className="side-doc-item">
                           <div className="side-doc-info">
                             <span className="side-doc-name">{doc.originalFilename}</span>
@@ -1103,39 +1165,39 @@ export function App() {
           </div>
         )}
 
-        {/* Delete Portfolio & S3 Storage Confirmation Modal */}
-        {portfolioToDelete && (
-          <div className="modal-backdrop" onClick={() => !isDeletingPortfolio && setPortfolioToDelete(null)}>
+        {/* Delete Portal & S3 Storage Confirmation Modal */}
+        {portalToDelete && (
+          <div className="modal-backdrop" onClick={() => !isDeletingPortal && setPortalToDelete(null)}>
             <div className="modal-dialog" onClick={e => e.stopPropagation()}>
               <div className="modal-header">
-                <h3>⚠️ Delete Portfolio & S3 Storage</h3>
+                <h3>⚠️ Delete Portal & S3 Storage</h3>
                 <button
                   type="button"
                   className="btn-close"
-                  disabled={isDeletingPortfolio}
-                  onClick={() => setPortfolioToDelete(null)}
+                  disabled={isDeletingPortal}
+                  onClick={() => setPortalToDelete(null)}
                 >
                   ✕
                 </button>
               </div>
               <div className="modal-body">
                 <p>
-                  Are you sure you want to permanently delete <strong>{portfolioToDelete.name}</strong>?
+                  Are you sure you want to permanently delete <strong>{portalToDelete.name}</strong>?
                 </p>
-                {portfolioToDelete.portfolioUrl && (
+                {(portalToDelete.portalUrl || portalToDelete.portfolioUrl) && (
                   <p className="modal-hint">
-                    Portfolio URL: <code>{portfolioToDelete.portfolioUrl}</code>
+                    Portal URL: <code>{portalToDelete.portalUrl || portalToDelete.portfolioUrl}</code>
                   </p>
                 )}
                 <div className="modal-alert-box">
                   <strong>This action is irreversible and will delete:</strong>
                   <ul>
-                    <li>Portfolio registration & metadata in your account</li>
+                    <li>Portal registration & metadata in your account</li>
                     <li>All PostgreSQL vector embeddings and indexed chunk text</li>
                     <li>
                       <strong>All files and the folder in the S3 bucket</strong>
-                      {portfolioToDelete.portfolioUrl && (
-                        <> (folder prefix: <code>{portfolioToDelete.portfolioUrl.replace(/^https?:\/\//, '').split('?')[0].split('/')[0]}/*</code>)</>
+                      {(portalToDelete.portalUrl || portalToDelete.portfolioUrl) && (
+                        <> (folder prefix: <code>{(portalToDelete.portalUrl || portalToDelete.portfolioUrl)!.replace(/^https?:\/\//, '').split('?')[0].split('/')[0]}/*</code>)</>
                       )}
                     </li>
                   </ul>
@@ -1145,18 +1207,18 @@ export function App() {
                 <button
                   type="button"
                   className="btn-secondary"
-                  disabled={isDeletingPortfolio}
-                  onClick={() => setPortfolioToDelete(null)}
+                  disabled={isDeletingPortal}
+                  onClick={() => setPortalToDelete(null)}
                 >
                   Cancel
                 </button>
                 <button
                   type="button"
                   className="btn-danger"
-                  disabled={isDeletingPortfolio}
-                  onClick={handleConfirmDeletePortfolio}
+                  disabled={isDeletingPortal}
+                  onClick={handleConfirmDeletePortal}
                 >
-                  {isDeletingPortfolio ? 'Deleting S3 & Portfolio...' : 'Yes, Delete Portfolio & S3 Files'}
+                  {isDeletingPortal ? 'Deleting S3 & Portal...' : 'Yes, Delete Portal & S3 Files'}
                 </button>
               </div>
             </div>

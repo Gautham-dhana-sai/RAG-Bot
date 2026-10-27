@@ -47,18 +47,21 @@ export interface FileItem {
   type: string;
 }
 
-export interface Portfolio {
+export interface Portal {
   id: string;
   tenantId?: string;
   name: string;
   slug: string;
   description?: string;
+  portalUrl?: string;
   portfolioUrl?: string;
   isPublic: boolean;
   documentCount: number;
   createdAt: string;
   updatedAt: string;
 }
+
+export type Portfolio = Portal;
 
 export interface DocumentInfo {
   id: string;
@@ -78,6 +81,7 @@ export interface UserSessionData {
     id: string;
     email: string;
     name: string;
+    username?: string;
   };
   tenant: {
     id: string;
