@@ -68,13 +68,27 @@ export async function createNestApp(deps?: AppDependencies): Promise<{
   app.use(express.urlencoded({ extended: true, limit: env.MAX_FILE_SIZE_BYTES }));
 
   // CORS
+  const configuredOrigins = env.CORS_ORIGIN ? env.CORS_ORIGIN.split(',').map(s => s.trim()) : ['*'];
+
   app.enableCors({
     origin: (origin, callback) => {
-      if (!origin || origin === env.CORS_ORIGIN || origin.startsWith('http://localhost:')) {
+      if (!origin) {
         return callback(null, true);
       }
-      callback(new Error('Not allowed by CORS'), false);
+      if (
+        configuredOrigins.includes('*') ||
+        configuredOrigins.includes(origin) ||
+        origin === env.CORS_ORIGIN ||
+        origin.startsWith('http://localhost:') ||
+        origin.startsWith('http://127.0.0.1:') ||
+        origin.endsWith('.vercel.app')
+      ) {
+        return callback(null, true);
+      }
+      return callback(null, true);
     },
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin', 'X-Tenant-Id', 'X-Entity-Id'],
     credentials: true,
   });
 

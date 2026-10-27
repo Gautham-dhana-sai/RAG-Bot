@@ -15,6 +15,7 @@ export class RateLimiterMiddleware implements NestMiddleware {
 
   use(req: Request, res: Response, next: NextFunction) {
     if (
+      req.method === 'OPTIONS' ||
       process.env.NODE_ENV === 'test' ||
       req.path === '/health' ||
       req.path.startsWith('/documentation')
