@@ -16,6 +16,7 @@ export interface User {
   id: string;
   email: string;
   name: string;
+  username?: string;
   passwordHash?: string;
   salt?: string;
   isSuperadmin: boolean;
@@ -37,6 +38,7 @@ export interface Entity {
   name: string;
   slug: string;
   description?: string;
+  portalUrl?: string;
   portfolioUrl?: string;
   isPublic: boolean;
   createdAt: Date;

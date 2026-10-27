@@ -2,7 +2,7 @@ import {
   IngestionSubmitResponse,
   IngestionJob,
   IngestionJobDocument,
-  Portfolio,
+  Portal,
   DocumentInfo,
 } from './types';
 
@@ -51,7 +51,16 @@ export class IngestionApiClient {
 
   // --- Auth & Session ---
 
-  async register(data: { email: string; password?: string; name?: string; workspaceName?: string; portfolioName?: string }): Promise<any> {
+  async register(data: {
+    username?: string;
+    email?: string;
+    identifier?: string;
+    password?: string;
+    name?: string;
+    workspaceName?: string;
+    portalName?: string;
+    portfolioName?: string;
+  }): Promise<any> {
     const response = await this.request(`${this.baseUrl}/v1/auth/register`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -68,7 +77,7 @@ export class IngestionApiClient {
     return res;
   }
 
-  async login(data: { email: string; password?: string }): Promise<any> {
+  async login(data: { identifier?: string; username?: string; email?: string; password?: string }): Promise<any> {
     const response = await this.request(`${this.baseUrl}/v1/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -76,7 +85,7 @@ export class IngestionApiClient {
     });
     if (!response.ok) {
       const err = await response.json().catch(() => ({}));
-      throw new Error(err.error?.message || err.message || 'Invalid email or password');
+      throw new Error(err.error?.message || err.message || 'Invalid username or password');
     }
     const res = await response.json();
     if (res.token) {
@@ -112,79 +121,96 @@ export class IngestionApiClient {
     return response.json();
   }
 
-  // --- Portfolios API ---
+  // --- Portals API ---
 
-  async listPortfolios(): Promise<Portfolio[]> {
-    const response = await this.request(`${this.baseUrl}/v1/portfolios`, {
+  async listPortals(): Promise<Portal[]> {
+    let response = await this.request(`${this.baseUrl}/v1/portals`, {
       method: 'GET',
     });
+    if (!response.ok && response.status === 404) {
+      response = await this.request(`${this.baseUrl}/v1/portfolios`, { method: 'GET' });
+    }
     if (!response.ok) {
       const err = await response.json().catch(() => ({}));
-      throw new Error(err.error?.message || err.message || 'Failed to list portfolios');
+      throw new Error(err.error?.message || err.message || 'Failed to list portals');
     }
     return response.json();
   }
+  listPortfolios = () => this.listPortals();
 
-  async createPortfolio(url: string, name?: string): Promise<Portfolio> {
-    const response = await this.request(`${this.baseUrl}/v1/portfolios`, {
+  async createPortal(url: string, name?: string): Promise<Portal> {
+    let response = await this.request(`${this.baseUrl}/v1/portals`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({ url, name }),
     });
-
+    if (!response.ok && response.status === 404) {
+      response = await this.request(`${this.baseUrl}/v1/portfolios`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url, name }),
+      });
+    }
     if (!response.ok) {
       const err = await response.json().catch(() => ({}));
-      throw new Error(err.error?.message || err.message || 'Failed to register portfolio URL');
+      throw new Error(err.error?.message || err.message || 'Failed to register portal URL');
     }
     return response.json();
   }
+  createPortfolio = (url: string, name?: string) => this.createPortal(url, name);
 
-  async getPortfolio(portfolioReference: string): Promise<Portfolio> {
-    const response = await this.request(
-      `${this.baseUrl}/v1/portfolios/${encodeURIComponent(portfolioReference)}`,
-      {
-        method: 'GET',
-      }
+  async getPortal(portalReference: string): Promise<Portal> {
+    let response = await this.request(
+      `${this.baseUrl}/v1/portals/${encodeURIComponent(portalReference)}`,
+      { method: 'GET' }
     );
+    if (!response.ok && response.status === 404) {
+      response = await this.request(`${this.baseUrl}/v1/portfolios/${encodeURIComponent(portalReference)}`, { method: 'GET' });
+    }
     if (!response.ok) {
       const err = await response.json().catch(() => ({}));
-      throw new Error(err.error?.message || err.message || 'Failed to fetch portfolio');
+      throw new Error(err.error?.message || err.message || 'Failed to fetch portal');
     }
     return response.json();
   }
+  getPortfolio = (ref: string) => this.getPortal(ref);
 
-  async deletePortfolio(portfolioReference: string): Promise<{ success: boolean; message: string }> {
-    const response = await this.request(
-      `${this.baseUrl}/v1/portfolios/${encodeURIComponent(portfolioReference)}`,
-      {
-        method: 'DELETE',
-      }
+  async deletePortal(portalReference: string): Promise<{ success: boolean; message: string }> {
+    let response = await this.request(
+      `${this.baseUrl}/v1/portals/${encodeURIComponent(portalReference)}`,
+      { method: 'DELETE' }
     );
+    if (!response.ok && response.status === 404) {
+      response = await this.request(`${this.baseUrl}/v1/portfolios/${encodeURIComponent(portalReference)}`, { method: 'DELETE' });
+    }
     if (!response.ok) {
       const err = await response.json().catch(() => ({}));
-      throw new Error(err.error?.message || err.message || 'Failed to delete portfolio');
+      throw new Error(err.error?.message || err.message || 'Failed to delete portal');
     }
     return response.json();
   }
+  deletePortfolio = (ref: string) => this.deletePortal(ref);
 
-  async getPortfolioDocuments(portfolioReference: string): Promise<DocumentInfo[]> {
-    const response = await this.request(
-      `${this.baseUrl}/v1/portfolios/${encodeURIComponent(portfolioReference)}/documents`,
-      {
-        method: 'GET',
-      }
+  async getPortalDocuments(portalReference: string): Promise<DocumentInfo[]> {
+    let response = await this.request(
+      `${this.baseUrl}/v1/portals/${encodeURIComponent(portalReference)}/documents`,
+      { method: 'GET' }
     );
+    if (!response.ok && response.status === 404) {
+      response = await this.request(`${this.baseUrl}/v1/portfolios/${encodeURIComponent(portalReference)}/documents`, { method: 'GET' });
+    }
     if (!response.ok) {
       const err = await response.json().catch(() => ({}));
       throw new Error(err.error?.message || err.message || 'Failed to fetch documents');
     }
     return response.json();
   }
+  getPortfolioDocuments = (ref: string) => this.getPortalDocuments(ref);
 
-  async submitPortfolioFiles(
-    portfolioReference: string,
+  async submitPortalFiles(
+    portalReference: string,
     files: File[]
   ): Promise<IngestionSubmitResponse> {
     const formData = new FormData();
@@ -192,13 +218,19 @@ export class IngestionApiClient {
       formData.append('files', file, file.name);
     }
 
-    const response = await this.request(
-      `${this.baseUrl}/v1/portfolios/${encodeURIComponent(portfolioReference)}/ingestion-jobs`,
+    let response = await this.request(
+      `${this.baseUrl}/v1/portals/${encodeURIComponent(portalReference)}/ingestion-jobs`,
       {
         method: 'POST',
         body: formData,
       }
     );
+    if (!response.ok && response.status === 404) {
+      response = await this.request(
+        `${this.baseUrl}/v1/portfolios/${encodeURIComponent(portalReference)}/ingestion-jobs`,
+        { method: 'POST', body: formData }
+      );
+    }
 
     if (!response.ok) {
       const err = await response.json().catch(() => ({}));
@@ -207,17 +239,22 @@ export class IngestionApiClient {
 
     return response.json();
   }
+  submitPortfolioFiles = (ref: string, files: File[]) => this.submitPortalFiles(ref, files);
 
-  async getPortfolioJobStatus(
-    portfolioReference: string,
+  async getPortalJobStatus(
+    portalReference: string,
     jobId: string
   ): Promise<IngestionJob & { documents?: IngestionJobDocument[] }> {
-    const response = await this.request(
-      `${this.baseUrl}/v1/portfolios/${encodeURIComponent(portfolioReference)}/ingestion-jobs/${encodeURIComponent(jobId)}`,
-      {
-        method: 'GET',
-      }
+    let response = await this.request(
+      `${this.baseUrl}/v1/portals/${encodeURIComponent(portalReference)}/ingestion-jobs/${encodeURIComponent(jobId)}`,
+      { method: 'GET' }
     );
+    if (!response.ok && response.status === 404) {
+      response = await this.request(
+        `${this.baseUrl}/v1/portfolios/${encodeURIComponent(portalReference)}/ingestion-jobs/${encodeURIComponent(jobId)}`,
+        { method: 'GET' }
+      );
+    }
 
     if (!response.ok) {
       const err = await response.json().catch(() => ({}));
@@ -226,6 +263,7 @@ export class IngestionApiClient {
 
     return response.json();
   }
+  getPortfolioJobStatus = (ref: string, jobId: string) => this.getPortalJobStatus(ref, jobId);
 
   // --- Backward Compatible Tenant/Entity Helpers ---
 
@@ -320,24 +358,34 @@ export class IngestionApiClient {
     entityId: string,
     question: string
   ): Promise<{ answer: string; citations: any[]; insufficientEvidence: boolean; confidence?: number }> {
-    // 1. Try dedicated portfolio verification endpoint first
-    const portfolioRef = entityId || portfolioReferenceOrTenantId;
+    // 1. Try dedicated portal verification endpoint first
+    const portalRef = entityId || portfolioReferenceOrTenantId;
     try {
-      const askRes = await this.request(
-        `${this.baseUrl}/v1/portfolios/${encodeURIComponent(portfolioRef)}/ask`,
+      let askRes = await this.request(
+        `${this.baseUrl}/v1/portals/${encodeURIComponent(portalRef)}/ask`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ question }),
         }
       );
+      if (!askRes.ok && askRes.status === 404) {
+        askRes = await this.request(
+          `${this.baseUrl}/v1/portfolios/${encodeURIComponent(portalRef)}/ask`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ question }),
+          }
+        );
+      }
       if (askRes.ok) {
         return await askRes.json();
       }
       // If endpoint exists but returned an error (e.g. 502/400), throw its actual message
       if (askRes.status !== 404) {
         const err = await askRes.json().catch(() => ({}));
-        throw new Error(err.error?.message || err.message || `Portfolio query failed (HTTP ${askRes.status})`);
+        throw new Error(err.error?.message || err.message || `Portal query failed (HTTP ${askRes.status})`);
       }
     } catch (err: any) {
       if (err.message && !err.message.includes('404')) {

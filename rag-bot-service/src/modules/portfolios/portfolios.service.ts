@@ -17,12 +17,14 @@ export interface PortfolioSummary {
   name: string;
   slug: string;
   description?: string;
+  portalUrl?: string;
   portfolioUrl?: string;
   isPublic: boolean;
   documentCount: number;
   createdAt: Date;
   updatedAt: Date;
 }
+export type PortalSummary = PortfolioSummary;
 
 export class PortfoliosService {
   constructor(
@@ -92,13 +94,15 @@ export class PortfoliosService {
     const portfolios: PortfolioSummary[] = [];
     for (const e of entities) {
       const count = await this.db.getDocumentCountByEntity(tenantId, e.id);
+      const url = e.portalUrl || e.portfolioUrl;
       portfolios.push({
         id: e.id,
         tenantId: e.tenantId,
         name: e.name,
         slug: e.slug,
         description: e.description,
-        portfolioUrl: e.portfolioUrl,
+        portalUrl: url,
+        portfolioUrl: url,
         isPublic: e.isPublic,
         documentCount: count,
         createdAt: e.createdAt,
@@ -110,7 +114,7 @@ export class PortfoliosService {
   }
 
   /**
-   * Create a new portfolio by URL, or return existing if already owned by user
+   * Create a new portal by URL, or return existing if already owned by user
    */
   async createPortfolio(auth: AuthContext, data: { url: string; name?: string }): Promise<PortfolioSummary> {
     const tenantId = await this.getAuthenticatedTenantId(auth);
@@ -119,21 +123,23 @@ export class PortfoliosService {
     try {
       normalizedUrl = normalizePortfolioUrl(data.url);
     } catch {
-      throw new BadRequestError('Please provide a valid portfolio URL');
+      throw new BadRequestError('Please provide a valid portal or website URL');
     }
 
-    // Check if portfolio URL already exists anywhere
+    // Check if portal URL already exists anywhere
     const existing = await this.db.getEntityByPortfolioUrl(normalizedUrl);
     if (existing) {
       if (existing.tenantId === tenantId) {
         const docCount = await this.db.getDocumentCountByEntity(tenantId, existing.id);
+        const url = existing.portalUrl || existing.portfolioUrl;
         return {
           id: existing.id,
           tenantId: existing.tenantId,
           name: existing.name,
           slug: existing.slug,
           description: existing.description,
-          portfolioUrl: existing.portfolioUrl,
+          portalUrl: url,
+          portfolioUrl: url,
           isPublic: existing.isPublic,
           documentCount: docCount,
           createdAt: existing.createdAt,
@@ -141,7 +147,7 @@ export class PortfoliosService {
         };
       } else {
         // Belongs to another user/tenant
-        throw new ConflictError('This portfolio URL is already registered to another account.');
+        throw new ConflictError('This portal URL is already registered to another account.');
       }
     }
 
@@ -165,17 +171,20 @@ export class PortfoliosService {
       tenantId,
       name: displayName,
       slug,
+      portalUrl: normalizedUrl,
       portfolioUrl: normalizedUrl,
       isPublic: true,
     });
 
+    const finalUrl = entity.portalUrl || entity.portfolioUrl;
     return {
       id: entity.id,
       tenantId: entity.tenantId,
       name: entity.name,
       slug: entity.slug,
       description: entity.description,
-      portfolioUrl: entity.portfolioUrl,
+      portalUrl: finalUrl,
+      portfolioUrl: finalUrl,
       isPublic: entity.isPublic,
       documentCount: 0,
       createdAt: entity.createdAt,
@@ -184,11 +193,12 @@ export class PortfoliosService {
   }
 
   /**
-   * Get single portfolio details
+   * Get summary details of a single portal by reference
    */
   async getPortfolio(auth: AuthContext, portfolioReference: string): Promise<PortfolioSummary> {
     const { tenantId, entity } = await this.resolvePortfolio(auth, portfolioReference);
-    const count = await this.db.getDocumentCountByEntity(tenantId, entity.id);
+    const docCount = await this.db.getDocumentCountByEntity(tenantId, entity.id);
+    const url = entity.portalUrl || entity.portfolioUrl;
 
     return {
       id: entity.id,
@@ -196,9 +206,10 @@ export class PortfoliosService {
       name: entity.name,
       slug: entity.slug,
       description: entity.description,
-      portfolioUrl: entity.portfolioUrl,
+      portalUrl: url,
+      portfolioUrl: url,
       isPublic: entity.isPublic,
-      documentCount: count,
+      documentCount: docCount,
       createdAt: entity.createdAt,
       updatedAt: entity.updatedAt,
     };
@@ -400,3 +411,6 @@ export class PortfoliosService {
     };
   }
 }
+
+export const PortalsService = PortfoliosService;
+export type PortalsService = PortfoliosService;

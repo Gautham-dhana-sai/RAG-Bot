@@ -20,8 +20,8 @@ import { PortfoliosService } from './portfolios.service.js';
 import { BadRequestError } from '../../shared/errors.js';
 import { UploadedFileItem } from '../ingestion/ingestion.types.js';
 
-@ApiTags('Portfolios & Ingestion')
-@Controller('v1/portfolios')
+@ApiTags('Portals & Ingestion')
+@Controller(['v1/portals', 'v1/portfolios'])
 export class PortfoliosController {
   constructor(
     @Inject(PortfoliosService) private readonly portfoliosService: PortfoliosService
@@ -175,4 +175,7 @@ export class PortfoliosController {
     return this.portfoliosService.deletePortfolio(req.authContext!, portfolioReference);
   }
 }
+
+export const PortalsController = PortfoliosController;
+export type PortalsController = PortfoliosController;
 

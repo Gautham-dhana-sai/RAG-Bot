@@ -119,7 +119,10 @@ export async function runMigrations(): Promise<void> {
 }
 
 // Allow direct CLI execution
-if (typeof import.meta !== 'undefined' && import.meta?.url && import.meta.url === `file://${process.argv[1]}`) {
+const isMain = typeof process.argv[1] === 'string' && (
+  process.argv[1].endsWith('migrate.ts') || process.argv[1].endsWith('migrate.js')
+);
+if (isMain) {
   runMigrations()
     .then(() => process.exit(0))
     .catch(() => process.exit(1));

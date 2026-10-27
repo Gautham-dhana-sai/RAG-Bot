@@ -216,15 +216,18 @@ export class AuthService {
   }
 
   /**
-   * Register a new user, workspace (tenant), and default portfolio (entity)
+   * Register a new user, workspace (tenant), and default portal (entity)
    * in one simple, automated onboarding step.
-   * Supports email + password registration without requiring other fields.
+   * Supports username, email + password registration.
    */
   async register(data: {
     name?: string;
-    email: string;
+    username?: string;
+    email?: string;
+    identifier?: string;
     password?: string;
     workspaceName?: string;
+    portalName?: string;
     portfolioName?: string;
   }): Promise<{
     token: string;
@@ -233,19 +236,24 @@ export class AuthService {
     activeEntity: Entity | null;
     entities: Entity[];
   }> {
-    if (!data.email) {
-      throw new BadRequestError('Email is required for registration');
+    const rawIdentifier = data.username || data.email || data.identifier;
+    if (!rawIdentifier || !rawIdentifier.trim()) {
+      throw new BadRequestError('Username or email is required for registration');
     }
 
-    const normalizedEmail = data.email.trim().toLowerCase();
-    const displayName = data.name?.trim() || normalizedEmail.split('@')[0];
+    const cleanUsername = data.username?.trim().toLowerCase() || (rawIdentifier.includes('@') ? null : rawIdentifier.trim().toLowerCase());
+    const normalizedEmail = (data.email?.trim().toLowerCase()) || (rawIdentifier.includes('@') ? rawIdentifier.trim().toLowerCase() : `${cleanUsername}@portal.local`);
+    const displayName = data.name?.trim() || cleanUsername || normalizedEmail.split('@')[0];
 
-    // Check if user already exists
-    let user = await this.db.getUserByEmail(normalizedEmail);
+    // Check if user already exists by email or username
+    let user = typeof (this.db as any).getUserByIdentifier === 'function'
+      ? await (this.db as any).getUserByIdentifier(cleanUsername || normalizedEmail)
+      : await this.db.getUserByEmail(normalizedEmail);
+
     if (user) {
       if (user.passwordHash && data.password) {
         if (!verifyPassword(data.password, user.passwordHash, user.salt || '')) {
-          throw new BadRequestError('A user with this email already exists');
+          throw new BadRequestError('A user with this username or email already exists');
         }
       }
       // Re-use user if found
@@ -264,6 +272,7 @@ export class AuthService {
 
       user = await this.db.createUser({
         name: displayName,
+        username: cleanUsername || undefined,
         email: normalizedEmail,
         passwordHash,
         salt,
@@ -294,14 +303,16 @@ export class AuthService {
       // 3. Assign User as Owner
       await this.db.createTenantMembership(tenant.id, user.id, 'owner');
 
-      // 4. Create Initial Entity ONLY if explicitly requested with a portfolio name
-      if (data.portfolioName?.trim()) {
-        const rawPortfolio = data.portfolioName.trim();
+      // 4. Create Initial Portal Entity ONLY if explicitly requested
+      const initialPortalName = data.portalName?.trim() || data.portfolioName?.trim();
+      if (initialPortalName) {
         const entity = await this.db.createEntity({
           tenantId: tenant.id,
-          name: rawPortfolio,
-          slug: slugify(rawPortfolio),
-          description: `Career portfolio for ${displayName}`,
+          name: initialPortalName,
+          slug: slugify(initialPortalName),
+          description: `Knowledge portal for ${displayName}`,
+          portalUrl: initialPortalName.includes('.') ? `https://${initialPortalName}` : undefined,
+          portfolioUrl: initialPortalName.includes('.') ? `https://${initialPortalName}` : undefined,
           isPublic: true,
         });
         entities = [entity];
@@ -328,29 +339,36 @@ export class AuthService {
   }
 
   /**
-   * Sign in by email and password, or demo profile
+   * Sign in by username/email and password, or demo profile
    */
-  async login(data: { email: string; password?: string }): Promise<{
+  async login(data: { identifier?: string; email?: string; username?: string; password?: string }): Promise<{
     token: string;
     user: User;
     tenant: Tenant;
     activeEntity: Entity | null;
     entities: Entity[];
   }> {
-    if (!data.email) {
-      throw new BadRequestError('Email is required to sign in');
+    const rawId = (data.identifier || data.username || data.email || '').trim();
+    if (!rawId) {
+      throw new BadRequestError('Username or email is required to sign in');
     }
 
-    const normalizedEmail = data.email.trim().toLowerCase();
-    const user = await this.db.getUserByEmail(normalizedEmail);
+    const cleanIdentifier = rawId.toLowerCase();
+    let user: User | null = null;
+    if (typeof (this.db as any).getUserByIdentifier === 'function') {
+      user = await (this.db as any).getUserByIdentifier(cleanIdentifier);
+    } else {
+      user = await this.db.getUserByEmail(cleanIdentifier);
+    }
+
     if (!user) {
-      throw new UnauthorizedError('Invalid email or password');
+      throw new UnauthorizedError('Invalid username/email or password');
     }
 
     // Verify password if user has passwordHash set
     if (user.passwordHash && user.salt) {
       if (!data.password || !verifyPassword(data.password, user.passwordHash, user.salt)) {
-        throw new UnauthorizedError('Invalid email or password');
+        throw new UnauthorizedError('Invalid username/email or password');
       }
     }
 

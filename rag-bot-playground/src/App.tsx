@@ -39,7 +39,7 @@ export function App() {
 
   const apiClient = useMemo(() => {
     return new RAGApiClient(config, handleLog);
-  }, [config, handleLog]);
+  }, [config.baseUrl, config.token, config.authMode, config.timeoutMs, handleLog]);
 
   // Save config on change (excluding sensitive token unless opted in)
   const handleConfigChange = (updated: Partial<RequestConfig>) => {
@@ -55,11 +55,16 @@ export function App() {
     handleConfigChange({ token: '', persistToken: false });
   };
 
-  // Immediate logout and token cleanup on session expiration
+  // Immediate logout and token cleanup on session expiration (guarded against cascading loops)
   useEffect(() => {
     const onSessionExpired = () => {
       clearSavedToken();
-      handleConfigChange({ token: '', persistToken: false });
+      setConfig(prev => {
+        if (!prev.token) return prev;
+        const next = { ...prev, token: '', persistToken: false };
+        saveConfig(next);
+        return next;
+      });
       setGeneralError('Your session has expired. Please re-authenticate.');
     };
     window.addEventListener('ragbot:session_expired', onSessionExpired);
@@ -74,7 +79,7 @@ export function App() {
     setGeneralError(null);
   };
 
-  // Connection probe test
+  // Connection probe test (Manual testing only)
   const handleTestConnection = async () => {
     setIsTestingConn(true);
     setGeneralError(null);
@@ -99,10 +104,7 @@ export function App() {
     }
   };
 
-  // Auto-test connection on initial load
-  useEffect(() => {
-    handleTestConnection();
-  }, []);
+  // Automatic useEffect probe removed: all API testing in the playground is strictly manual
 
   // Create new conversation
   const handleCreateConversation = async () => {

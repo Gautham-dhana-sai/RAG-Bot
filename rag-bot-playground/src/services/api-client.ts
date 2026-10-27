@@ -15,6 +15,7 @@ import {
 import { InspectorLog } from '../types/playground.types';
 
 export class RAGApiClient {
+  private static lastSessionExpiredTime = 0;
   private config: RequestConfig;
   private onLog?: (log: InspectorLog) => void;
 
@@ -111,8 +112,12 @@ export class RAGApiClient {
 
       if (!response.ok) {
         isError = true;
-        if (response.status === 401 && typeof window !== 'undefined') {
-          window.dispatchEvent(new CustomEvent('ragbot:session_expired'));
+        if (response.status === 401 && this.config.token && typeof window !== 'undefined') {
+          const now = Date.now();
+          if (now - RAGApiClient.lastSessionExpiredTime > 3000) {
+            RAGApiClient.lastSessionExpiredTime = now;
+            window.dispatchEvent(new CustomEvent('ragbot:session_expired'));
+          }
         }
         const errMessage = responseBody?.error?.message || responseBody?.message || `HTTP ${status}`;
         throw new Error(errMessage);

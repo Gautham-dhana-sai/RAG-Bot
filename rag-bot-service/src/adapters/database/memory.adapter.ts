@@ -58,17 +58,39 @@ export class MemoryDatabaseAdapter implements IDatabaseAdapter {
   }
 
   async getUserByEmail(email: string): Promise<User | null> {
+    const clean = email.trim().toLowerCase();
     for (const user of this.users.values()) {
-      if (user.email === email) return user;
+      if (user.email.toLowerCase() === clean || (user.username && user.username.toLowerCase() === clean)) {
+        return user;
+      }
     }
     return null;
   }
 
-  async createUser(data: { id?: string; email: string; name: string; passwordHash?: string; salt?: string; isSuperadmin?: boolean }): Promise<User> {
+  async getUserByUsername(username: string): Promise<User | null> {
+    const clean = username.trim().toLowerCase();
+    for (const user of this.users.values()) {
+      if (user.username && user.username.toLowerCase() === clean) return user;
+    }
+    return null;
+  }
+
+  async getUserByIdentifier(identifier: string): Promise<User | null> {
+    const clean = identifier.trim().toLowerCase();
+    for (const user of this.users.values()) {
+      if (user.email.toLowerCase() === clean || (user.username && user.username.toLowerCase() === clean)) {
+        return user;
+      }
+    }
+    return null;
+  }
+
+  async createUser(data: { id?: string; email: string; name: string; username?: string; passwordHash?: string; salt?: string; isSuperadmin?: boolean }): Promise<User> {
     const user: User = {
       id: data.id || generateUuid(),
       email: data.email,
       name: data.name,
+      username: data.username?.trim().toLowerCase(),
       passwordHash: data.passwordHash,
       salt: data.salt,
       isSuperadmin: !!data.isSuperadmin,
@@ -113,12 +135,20 @@ export class MemoryDatabaseAdapter implements IDatabaseAdapter {
   }
 
   async getEntityByPortfolioUrl(portfolioUrl: string): Promise<Entity | null> {
+    const target = portfolioUrl.toLowerCase();
     for (const entity of this.entities.values()) {
-      if (entity.portfolioUrl && entity.portfolioUrl.toLowerCase() === portfolioUrl.toLowerCase()) {
+      if (
+        (entity.portfolioUrl && entity.portfolioUrl.toLowerCase() === target) ||
+        (entity.portalUrl && entity.portalUrl.toLowerCase() === target)
+      ) {
         return entity;
       }
     }
     return null;
+  }
+
+  async getEntityByPortalUrl(portalUrl: string): Promise<Entity | null> {
+    return this.getEntityByPortfolioUrl(portalUrl);
   }
 
   async getEntityByReference(tenantId: string, reference: string): Promise<Entity | null> {
@@ -128,7 +158,8 @@ export class MemoryDatabaseAdapter implements IDatabaseAdapter {
         if (
           entity.id === reference ||
           entity.slug.toLowerCase() === refLower ||
-          (entity.portfolioUrl && entity.portfolioUrl.toLowerCase() === refLower)
+          (entity.portfolioUrl && entity.portfolioUrl.toLowerCase() === refLower) ||
+          (entity.portalUrl && entity.portalUrl.toLowerCase() === refLower)
         ) {
           return entity;
         }
@@ -141,14 +172,16 @@ export class MemoryDatabaseAdapter implements IDatabaseAdapter {
     return Array.from(this.entities.values()).filter(e => e.tenantId === tenantId);
   }
 
-  async createEntity(data: { id?: string; tenantId: string; name: string; slug: string; description?: string; portfolioUrl?: string; isPublic?: boolean }): Promise<Entity> {
+  async createEntity(data: { id?: string; tenantId: string; name: string; slug: string; description?: string; portalUrl?: string; portfolioUrl?: string; isPublic?: boolean }): Promise<Entity> {
+    const url = data.portalUrl || data.portfolioUrl;
     const entity: Entity = {
       id: data.id || generateUuid(),
       tenantId: data.tenantId,
       name: data.name,
       slug: data.slug,
       description: data.description,
-      portfolioUrl: data.portfolioUrl,
+      portalUrl: url,
+      portfolioUrl: url,
       isPublic: data.isPublic ?? false,
       createdAt: new Date(),
       updatedAt: new Date(),

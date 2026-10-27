@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useCallback } from 'react';
 import { RAGApiClient } from '../../services/api-client';
 import { DocumentItem, IngestionJob } from '../../types/api.types';
 
@@ -15,6 +15,8 @@ export const IngestionStatusViewer: React.FC<Props> = ({ apiClient, tenantId, en
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const [hasFetched, setHasFetched] = useState(false);
+
   const fetchDocuments = useCallback(async () => {
     if (!tenantId || !entityId) return;
     setIsLoading(true);
@@ -22,6 +24,7 @@ export const IngestionStatusViewer: React.FC<Props> = ({ apiClient, tenantId, en
     try {
       const docs = await apiClient.listDocuments(tenantId, entityId);
       setDocuments(docs);
+      setHasFetched(true);
     } catch (err: any) {
       setError(err.message || 'Failed to list documents');
     } finally {
@@ -43,9 +46,7 @@ export const IngestionStatusViewer: React.FC<Props> = ({ apiClient, tenantId, en
     }
   };
 
-  useEffect(() => {
-    fetchDocuments();
-  }, [fetchDocuments]);
+  // Automated background polling/fetching removed - manual testing only via "Refresh Documents" button
 
   const readyCount = documents.filter(d => d.status === 'READY').length;
 
@@ -72,7 +73,9 @@ export const IngestionStatusViewer: React.FC<Props> = ({ apiClient, tenantId, en
       {error && <div className="diag-error">⚠️ {error}</div>}
 
       <div className="documents-list-mini">
-        {documents.length === 0 ? (
+        {!hasFetched ? (
+          <p className="hint">Click <strong>↻ Refresh Documents</strong> to manually inspect indexed documents from the server.</p>
+        ) : documents.length === 0 ? (
           <p className="hint">No documents found for this entity. Upload files using the Ingestion Client.</p>
         ) : (
           <table className="mini-doc-table">

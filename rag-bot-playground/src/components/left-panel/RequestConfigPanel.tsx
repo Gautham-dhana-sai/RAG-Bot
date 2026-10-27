@@ -1,8 +1,47 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState } from 'react';
 import { RequestConfig, ConnectionState, AuthMode } from '../../types/config.types';
 import { Entity, DemoProfile } from '../../types/api.types';
 import { RAGApiClient } from '../../services/api-client';
 import { ConnectionStatusBadge } from './ConnectionStatusBadge';
+
+const DEFAULT_DEMO_PROFILES: DemoProfile[] = [
+  {
+    id: 'alex-acme',
+    name: 'Alex Chen',
+    role: 'Principal Cloud Architect',
+    workspaceName: 'Acme Cloud Systems',
+    portfolioName: 'Alex Chen - Principal Architect',
+    tenantId: '0164d75c-ad5a-4a6b-98a9-7ec4aacd0529',
+    entityId: 'e29fa525-0079-44c0-b5f5-183a8b4e093d',
+    token: 'dev-persona-rag-secret-token-change-in-prod',
+    isGuest: false,
+    isPublic: true,
+  },
+  {
+    id: 'sarah-datapulse',
+    name: 'Sarah Connor',
+    role: 'Staff ML Engineer',
+    workspaceName: 'DataPulse Analytics',
+    portfolioName: 'Sarah Connor - Staff ML Engineer',
+    tenantId: 'd0e1a2b3-0002-4000-8000-000000000002',
+    entityId: 'e0e1a2b3-0002-4000-8000-000000000002',
+    token: 'dev-persona-rag-secret-token-change-in-prod',
+    isGuest: false,
+    isPublic: true,
+  },
+  {
+    id: 'public-guest',
+    name: 'Anonymous Guest',
+    role: 'External Evaluator',
+    workspaceName: 'Acme Cloud Systems',
+    portfolioName: 'Alex Chen - Principal Architect',
+    tenantId: '0164d75c-ad5a-4a6b-98a9-7ec4aacd0529',
+    entityId: 'e29fa525-0079-44c0-b5f5-183a8b4e093d',
+    token: '',
+    isGuest: true,
+    isPublic: true,
+  },
+];
 
 interface RequestConfigPanelProps {
   config: RequestConfig;
@@ -31,9 +70,21 @@ export const RequestConfigPanel: React.FC<RequestConfigPanelProps> = ({
   isTestingConnection,
   onActiveNamesChange,
 }) => {
-  const [demoProfiles, setDemoProfiles] = useState<DemoProfile[]>([]);
+  const [demoProfiles, setDemoProfiles] = useState<DemoProfile[]>(DEFAULT_DEMO_PROFILES);
+  const [isLoadingProfiles, setIsLoadingProfiles] = useState(false);
   const [selectedProfileId, setSelectedProfileId] = useState<string>('alex-acme');
-  const [entities, setEntities] = useState<Entity[]>([]);
+  const [entities, setEntities] = useState<Entity[]>([
+    {
+      id: config.entityId,
+      tenantId: config.tenantId,
+      name: 'Alex Chen - Principal Architect',
+      slug: 'alex-chen',
+      isPublic: true,
+      createdAt: '',
+      updatedAt: '',
+    },
+  ]);
+  const [isLoadingEntities, setIsLoadingEntities] = useState(false);
   const [workspaceName, setWorkspaceName] = useState<string>('Acme Cloud Systems');
 
   // Register Modal state
@@ -54,8 +105,9 @@ export const RequestConfigPanel: React.FC<RequestConfigPanelProps> = ({
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showTokenInput, setShowTokenInput] = useState(false);
 
-  // Fetch demo profiles on mount or when connected
-  const loadDemoProfiles = useCallback(async () => {
+  // Manual fetch for demo profiles (no automatic recursive effect)
+  const loadDemoProfiles = async () => {
+    setIsLoadingProfiles(true);
     try {
       const profiles = await apiClient.getDemoProfiles();
       if (Array.isArray(profiles) && profiles.length > 0) {
@@ -76,15 +128,18 @@ export const RequestConfigPanel: React.FC<RequestConfigPanelProps> = ({
       }
     } catch {
       // Offline or mock
+    } finally {
+      setIsLoadingProfiles(false);
     }
-  }, [apiClient, config.tenantId, onActiveNamesChange]);
+  };
 
-  // Fetch entities whenever tenant changes
-  const loadEntities = useCallback(async () => {
+  // Manual fetch for entities (no automatic recursive effect)
+  const loadEntities = async () => {
     if (!config.tenantId) return;
+    setIsLoadingEntities(true);
     try {
       const list = await apiClient.listEntities(config.tenantId);
-      if (Array.isArray(list)) {
+      if (Array.isArray(list) && list.length > 0) {
         setEntities(list);
         const active = list.find(e => e.id === config.entityId) || list[0];
         if (active && onActiveNamesChange) {
@@ -96,16 +151,12 @@ export const RequestConfigPanel: React.FC<RequestConfigPanelProps> = ({
       }
     } catch {
       // fallback
+    } finally {
+      setIsLoadingEntities(false);
     }
-  }, [apiClient, config.tenantId, config.entityId, workspaceName, onActiveNamesChange]);
+  };
 
-  useEffect(() => {
-    loadDemoProfiles();
-  }, [loadDemoProfiles]);
-
-  useEffect(() => {
-    loadEntities();
-  }, [config.tenantId, loadEntities]);
+  // Automatic useEffect triggers removed: all API calls in playground are manual testing only
 
   // Handle 1-click Profile Selection
   const handleSelectProfile = (profileId: string) => {
@@ -278,6 +329,16 @@ export const RequestConfigPanel: React.FC<RequestConfigPanelProps> = ({
       <div className="form-section">
         <div className="field-header-row">
           <label className="field-label">Switch Workspace / Profile</label>
+          <button
+            type="button"
+            className="btn-toolbar"
+            style={{ fontSize: '0.75rem', padding: '0.2rem 0.5rem', background: 'none', border: '1px solid var(--border)', borderRadius: '4px', cursor: 'pointer' }}
+            onClick={loadDemoProfiles}
+            disabled={isLoadingProfiles}
+            title="Manually fetch demo profiles from server"
+          >
+            {isLoadingProfiles ? 'Syncing...' : '↻ Sync Profiles'}
+          </button>
         </div>
         <div className="profile-quick-picker">
           {demoProfiles.map(p => (
@@ -308,14 +369,26 @@ export const RequestConfigPanel: React.FC<RequestConfigPanelProps> = ({
       {/* Entity / Portfolio Selector (Human Friendly Dropdown) */}
       <div className="form-section">
         <div className="field-header-row">
-          <label className="field-label">Active Portfolio</label>
-          <button
-            type="button"
-            className="btn-add-portfolio"
-            onClick={() => setShowNewPortfolio(!showNewPortfolio)}
-          >
-            {showNewPortfolio ? 'Cancel' : '+ New Portfolio'}
-          </button>
+          <label className="field-label">Active Portal / Entity</label>
+          <div style={{ display: 'flex', gap: '0.4rem' }}>
+            <button
+              type="button"
+              className="btn-toolbar"
+              style={{ fontSize: '0.75rem', padding: '0.2rem 0.5rem', background: 'none', border: '1px solid var(--border)', borderRadius: '4px', cursor: 'pointer' }}
+              onClick={loadEntities}
+              disabled={isLoadingEntities}
+              title="Manually fetch entities from server"
+            >
+              {isLoadingEntities ? 'Fetching...' : '↻ Fetch'}
+            </button>
+            <button
+              type="button"
+              className="btn-add-portfolio"
+              onClick={() => setShowNewPortfolio(!showNewPortfolio)}
+            >
+              {showNewPortfolio ? 'Cancel' : '+ New'}
+            </button>
+          </div>
         </div>
 
         {showNewPortfolio ? (

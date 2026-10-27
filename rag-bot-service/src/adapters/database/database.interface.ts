@@ -26,17 +26,20 @@ export interface IDatabaseAdapter {
   // Users & Memberships
   getUserById(id: string): Promise<User | null>;
   getUserByEmail(email: string): Promise<User | null>;
-  createUser(data: { id?: string; email: string; name: string; passwordHash?: string; salt?: string; isSuperadmin?: boolean }): Promise<User>;
+  getUserByUsername?(username: string): Promise<User | null>;
+  getUserByIdentifier?(identifier: string): Promise<User | null>;
+  createUser(data: { id?: string; email: string; name: string; username?: string; passwordHash?: string; salt?: string; isSuperadmin?: boolean }): Promise<User>;
   getTenantMembership(tenantId: string, userId: string): Promise<TenantMembership | null>;
   getUserTenantMembership(userId: string): Promise<TenantMembership | null>;
   createTenantMembership(tenantId: string, userId: string, role: 'owner' | 'admin' | 'member' | 'viewer'): Promise<TenantMembership>;
 
-  // Entities
+  // Entities & Portals
   getEntityById(tenantId: string, entityId: string): Promise<Entity | null>;
   getEntityByPortfolioUrl(portfolioUrl: string): Promise<Entity | null>;
+  getEntityByPortalUrl?(portalUrl: string): Promise<Entity | null>;
   getEntityByReference(tenantId: string, reference: string): Promise<Entity | null>;
   getEntitiesByTenant(tenantId: string): Promise<Entity[]>;
-  createEntity(data: { id?: string; tenantId: string; name: string; slug: string; description?: string; portfolioUrl?: string; isPublic?: boolean }): Promise<Entity>;
+  createEntity(data: { id?: string; tenantId: string; name: string; slug: string; description?: string; portalUrl?: string; portfolioUrl?: string; isPublic?: boolean }): Promise<Entity>;
   deleteEntity(tenantId: string, entityId: string): Promise<boolean>;
   getEntityMembership(tenantId: string, entityId: string, userId: string): Promise<EntityMembership | null>;
 
