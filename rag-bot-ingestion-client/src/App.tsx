@@ -47,7 +47,7 @@ export function cleanDocCitationTags(text: string): string {
 
 export function App() {
   // Configuration
-  const [apiUrl, setApiUrl] = useState(() => localStorage.getItem('ragbot_api_url') || 'http://localhost:3000');
+  const [apiUrl, setApiUrl] = useState(() => import.meta.env.VITE_API_URL || 'http://localhost:3000');
   const [authToken, setAuthToken] = useState(() => localStorage.getItem('ragbot_token') || '');
   const [userEmail, setUserEmail] = useState(() => localStorage.getItem('ragbot_email') || '');
   const [userName, setUserName] = useState(() => localStorage.getItem('ragbot_username') || '');

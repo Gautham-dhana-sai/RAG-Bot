@@ -61,13 +61,15 @@ lambda.cjs.map
 # ------------------------------------------------------------------------------
 data/
 */data/
-storage/
-*/storage/
+**/data/storage/
 uploads/
 */uploads/
 *.local.db
 *.sqlite
 *.sqlite3
+
+# Explicitly ensure source code directories are never ignored
+!**/src/**
 
 # Temporary files & sample downloads
 temp_*
