@@ -45,6 +45,15 @@ export function cleanDocCitationTags(text: string): string {
     .trim();
 }
 
+export function capitalizeName(str: string): string {
+  if (!str) return 'User';
+  return str
+    .split(/[\s._-]+/)
+    .filter(Boolean)
+    .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .join(' ');
+}
+
 export function App() {
   // Configuration
   const [apiUrl, setApiUrl] = useState(() => import.meta.env.VITE_API_URL || 'http://localhost:3000');
@@ -86,7 +95,7 @@ export function App() {
   const [isLoadingDocuments, setIsLoadingDocuments] = useState(false);
 
   // Quick verification Q&A state (isolated per login session)
-  const [queryText, setQueryText] = useState('What is the primary purpose and core architecture explained in this portal?');
+  const [queryText, setQueryText] = useState('What is this portal about and what are its key benefits?');
   const [isQuerying, setIsQuerying] = useState(false);
   const [pendingQuestion, setPendingQuestion] = useState<string | null>(null);
   const [showAllQuestions, setShowAllQuestions] = useState(false);
@@ -359,7 +368,7 @@ export function App() {
     }
   };
 
-  // Delete Portal & S3 Files handler
+  // Delete Portal handler
   const handleConfirmDeletePortal = async () => {
     if (!portalToDelete) return;
     setIsDeletingPortal(true);
@@ -368,7 +377,7 @@ export function App() {
       const client = getClient();
       const res = await client.deletePortal(portalToDelete.id);
       setDeleteSuccessMessage(
-        res.message || `Portal "${portalToDelete.name}" and associated S3 files were deleted.`
+        res.message || `Portal "${portalToDelete.name}" and associated documents were deleted.`
       );
 
       if (selectedPortal?.id === portalToDelete.id) {
@@ -382,7 +391,7 @@ export function App() {
       await loadPortals();
       setTimeout(() => setDeleteSuccessMessage(null), 5000);
     } catch (err: any) {
-      setPortalError(err.message || 'Failed to delete portal and storage files.');
+      setPortalError(err.message || 'Failed to delete portal and documents.');
     } finally {
       setIsDeletingPortal(false);
     }
@@ -675,16 +684,11 @@ export function App() {
       {/* Top Navigation */}
       <header className="portal-navbar">
         <div className="nav-brand">
-          <span className="brand-logo">🌐</span>
+          <span className="brand-logo">🤖</span>
           <span className="brand-title">PersonaRAG Portals</span>
-          {workspaceName && <span className="workspace-pill">{workspaceName}</span>}
         </div>
 
         <div className="nav-user">
-          <span className="user-email">
-            {userName && <strong style={{ color: 'var(--text)', marginRight: '0.35rem' }}>@{userName}</strong>}
-            {userEmail && <span style={{ opacity: 0.85 }}>({userEmail})</span>}
-          </span>
           <button type="button" className="btn-secondary btn-sm" onClick={handleLogout}>
             Sign Out
           </button>
@@ -699,9 +703,9 @@ export function App() {
           <div className="dashboard-container">
             <div className="dashboard-header">
               <div>
-                <h2>Your Portals & Knowledge Bases</h2>
+                <h2>Welcome, {capitalizeName(userName || userEmail.split('@')[0])}</h2>
                 <p className="subtitle">
-                  Select a portal to manage documents and knowledge retrieval, or register a new portal or website by URL.
+                  Manage your portals & knowledge bases, or register a new portal or website by URL.
                 </p>
               </div>
               <button
@@ -811,14 +815,30 @@ export function App() {
                           <div className="portal-card-actions portfolio-card-actions">
                             <button
                               type="button"
-                              className="btn-danger-outline btn-sm"
-                              title="Delete portal, documents, and S3 folder"
+                              className="btn-card-delete-icon"
+                              title="Delete portal"
+                              aria-label="Delete portal"
                               onClick={(e) => {
                                 e.stopPropagation();
                                 setPortalToDelete(p);
                               }}
                             >
-                              🗑 Delete
+                              <svg
+                                xmlns="http://www.w3.org/2000/svg"
+                                viewBox="0 0 24 24"
+                                width="18"
+                                height="18"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="2"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                              >
+                                <polyline points="3 6 5 6 21 6" />
+                                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                                <line x1="10" y1="11" x2="10" y2="17" />
+                                <line x1="14" y1="11" x2="14" y2="17" />
+                              </svg>
                             </button>
                             <button
                               type="button"
@@ -842,42 +862,63 @@ export function App() {
           /* ======================================================== */
           <div className="workspace-container">
             <div className="workspace-header">
-              <button
-                type="button"
-                className="btn-link btn-back"
-                onClick={() => {
-                  setSelectedPortal(null);
-                  setCurrentJob(null);
-                  setJobDocuments([]);
-                  setSelectedFiles([]);
-                  loadPortals();
-                }}
-              >
-                ← Back to Portals
-              </button>
+              <div className="workspace-header-left">
+                <button
+                  type="button"
+                  className="btn-link btn-back"
+                  onClick={() => {
+                    setSelectedPortal(null);
+                    setCurrentJob(null);
+                    setJobDocuments([]);
+                    setSelectedFiles([]);
+                    loadPortals();
+                  }}
+                >
+                  ← Back to Portals
+                </button>
+              </div>
 
-              <div className="portal-title-group portfolio-title-group">
-                <h2>{selectedPortal.name}</h2>
-                {(selectedPortal.portalUrl || selectedPortal.portfolioUrl) && (
-                  <a
-                    href={selectedPortal.portalUrl || selectedPortal.portfolioUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="portal-external-link portfolio-external-link"
-                  >
-                    🔗 {selectedPortal.portalUrl || selectedPortal.portfolioUrl} ↗
-                  </a>
-                )}
+              <div className="workspace-header-center">
+                <div className="portal-title-group portfolio-title-group">
+                  <h2>{selectedPortal.name}</h2>
+                  {(selectedPortal.portalUrl || selectedPortal.portfolioUrl) && (
+                    <a
+                      href={selectedPortal.portalUrl || selectedPortal.portfolioUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="portal-external-link portfolio-external-link"
+                    >
+                      🔗 {selectedPortal.portalUrl || selectedPortal.portfolioUrl} ↗
+                    </a>
+                  )}
+                </div>
               </div>
 
               <div className="workspace-header-actions">
                 <button
                   type="button"
                   className="btn-danger-outline btn-sm"
-                  title="Delete this portal, indexed knowledge, and S3 folder"
+                  title="Delete this portal and all associated documents"
                   onClick={() => setPortalToDelete(selectedPortal)}
                 >
-                  🗑 Delete Portal & S3
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    viewBox="0 0 24 24"
+                    width="14"
+                    height="14"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    style={{ marginRight: '0.4rem', verticalAlign: 'text-bottom' }}
+                  >
+                    <polyline points="3 6 5 6 21 6" />
+                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                    <line x1="10" y1="11" x2="10" y2="17" />
+                    <line x1="14" y1="11" x2="14" y2="17" />
+                  </svg>
+                  Delete Portal
                 </button>
               </div>
             </div>
@@ -955,7 +996,7 @@ export function App() {
                       className="qa-input"
                       value={queryText}
                       onChange={e => setQueryText(e.target.value)}
-                      placeholder="Ask a question about this portal (e.g. architecture, API specs, core features, workflows)..."
+                      placeholder="Ask a question about this portal (e.g. what is it about, key benefits, how to get started)..."
                       disabled={isQuerying}
                     />
                     <button
@@ -974,23 +1015,30 @@ export function App() {
                       <button
                         type="button"
                         className="prompt-chip"
-                        onClick={() => handlePickPrompt('Summarize the primary purpose, architecture, and core capabilities of this portal.')}
+                        onClick={() => handlePickPrompt('What is this portal or website about and what is its main purpose?')}
                       >
-                        💡 Architecture & overview
+                        💡 What is this portal about?
                       </button>
                       <button
                         type="button"
                         className="prompt-chip"
-                        onClick={() => handlePickPrompt('What are the key technical components, data flows, and workflows detailed in the indexed documents?')}
+                        onClick={() => handlePickPrompt('What are the main benefits, advantages, and key value provided by this portal?')}
                       >
-                        ⚙️ Technical workflows
+                        ⭐ Key benefits & value
                       </button>
                       <button
                         type="button"
                         className="prompt-chip"
-                        onClick={() => handlePickPrompt("List the setup requirements, configuration steps, and integration guides explained in this portal's knowledge base.")}
+                        onClick={() => handlePickPrompt('What main services, products, or core topics are covered in this portal?')}
                       >
-                        📋 Setup & integration
+                        📌 Main services & topics
+                      </button>
+                      <button
+                        type="button"
+                        className="prompt-chip"
+                        onClick={() => handlePickPrompt('How can users get started with this portal and what are the next steps?')}
+                      >
+                        🚀 How to get started
                       </button>
                     </div>
                   )}
@@ -1165,12 +1213,12 @@ export function App() {
           </div>
         )}
 
-        {/* Delete Portal & S3 Storage Confirmation Modal */}
+        {/* Delete Portal Confirmation Modal */}
         {portalToDelete && (
           <div className="modal-backdrop" onClick={() => !isDeletingPortal && setPortalToDelete(null)}>
             <div className="modal-dialog" onClick={e => e.stopPropagation()}>
               <div className="modal-header">
-                <h3>⚠️ Delete Portal & S3 Storage</h3>
+                <h3>⚠️ Delete Portal</h3>
                 <button
                   type="button"
                   className="btn-close"
@@ -1192,14 +1240,9 @@ export function App() {
                 <div className="modal-alert-box">
                   <strong>This action is irreversible and will delete:</strong>
                   <ul>
-                    <li>Portal registration & metadata in your account</li>
-                    <li>All PostgreSQL vector embeddings and indexed chunk text</li>
-                    <li>
-                      <strong>All files and the folder in the S3 bucket</strong>
-                      {(portalToDelete.portalUrl || portalToDelete.portfolioUrl) && (
-                        <> (folder prefix: <code>{(portalToDelete.portalUrl || portalToDelete.portfolioUrl)!.replace(/^https?:\/\//, '').split('?')[0].split('/')[0]}/*</code>)</>
-                      )}
-                    </li>
+                    <li>Portal profile and registered configuration</li>
+                    <li>All indexed document chunks and vector embeddings</li>
+                    <li>All uploaded files and associated documents</li>
                   </ul>
                 </div>
               </div>
@@ -1218,7 +1261,7 @@ export function App() {
                   disabled={isDeletingPortal}
                   onClick={handleConfirmDeletePortal}
                 >
-                  {isDeletingPortal ? 'Deleting S3 & Portal...' : 'Yes, Delete Portal & S3 Files'}
+                  {isDeletingPortal ? 'Deleting Portal...' : 'Yes, Delete Portal'}
                 </button>
               </div>
             </div>

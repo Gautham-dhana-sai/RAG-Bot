@@ -119,6 +119,21 @@ describe('Auth & Onboarding Registration Flow', () => {
     expect(Array.isArray(portals)).toBe(true);
     expect(portals.length).toBeGreaterThanOrEqual(1);
     expect(portals[0].name).toBe('Developer Docs Portal');
+
+    // 4. Verify duplicate registration fails with a 400 error and does NOT overwrite
+    const dupRegRes = await app.inject({
+      method: 'POST',
+      url: '/v1/auth/register',
+      payload: {
+        username: 'devportal_lead',
+        email: 'another_email@domain.com',
+        password: 'anotherPassword456',
+      },
+    });
+
+    expect(dupRegRes.statusCode).toBe(400);
+    const dupBody = JSON.parse(dupRegRes.body);
+    expect(dupBody.error.message).toMatch(/already exists/i);
   });
 });
 

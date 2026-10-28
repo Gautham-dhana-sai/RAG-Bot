@@ -404,10 +404,10 @@ export class PortfoliosService {
     // 3. Delete the entity from the database (cascades to all jobs, docs, versions, chunks, convs)
     await this.db.deleteEntity(tenantId, entity.id);
 
-    logger.info(`Portfolio "${entity.name}" (ID: ${entity.id}, URL: ${entity.portfolioUrl}) and storage deleted.`);
+    logger.info(`Portal "${entity.name}" (ID: ${entity.id}, URL: ${entity.portfolioUrl}) and storage deleted.`);
     return {
       success: true,
-      message: `Portfolio "${entity.name}" and all associated storage files were deleted successfully.`,
+      message: `Portal "${entity.name}" and all associated documents were deleted successfully.`,
     };
   }
 }

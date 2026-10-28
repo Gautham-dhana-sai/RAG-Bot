@@ -245,40 +245,44 @@ export class AuthService {
     const normalizedEmail = (data.email?.trim().toLowerCase()) || (rawIdentifier.includes('@') ? rawIdentifier.trim().toLowerCase() : `${cleanUsername}@portal.local`);
     const displayName = data.name?.trim() || cleanUsername || normalizedEmail.split('@')[0];
 
-    // Check if user already exists by email or username
-    let user = typeof (this.db as any).getUserByIdentifier === 'function'
-      ? await (this.db as any).getUserByIdentifier(cleanUsername || normalizedEmail)
-      : await this.db.getUserByEmail(normalizedEmail);
-
-    if (user) {
-      if (user.passwordHash && data.password) {
-        if (!verifyPassword(data.password, user.passwordHash, user.salt || '')) {
-          throw new BadRequestError('A user with this username or email already exists');
-        }
-      }
-      // Re-use user if found
-    } else {
-      let passwordHash: string | undefined;
-      let salt: string | undefined;
-
-      if (data.password) {
-        if (data.password.length < 6) {
-          throw new BadRequestError('Password must be at least 6 characters');
-        }
-        const hashed = hashPassword(data.password);
-        passwordHash = hashed.hash;
-        salt = hashed.salt;
-      }
-
-      user = await this.db.createUser({
-        name: displayName,
-        username: cleanUsername || undefined,
-        email: normalizedEmail,
-        passwordHash,
-        salt,
-        isSuperadmin: false,
-      });
+    // Check if user already exists by email or username - strictly block duplicate profiles
+    const existingByEmail = await this.db.getUserByEmail(normalizedEmail);
+    if (existingByEmail) {
+      throw new BadRequestError('A user with this email already exists. Please sign in instead.');
     }
+
+    if (cleanUsername) {
+      let existingByUsername: User | null = null;
+      if (typeof (this.db as any).getUserByUsername === 'function') {
+        existingByUsername = await (this.db as any).getUserByUsername(cleanUsername);
+      } else if (typeof (this.db as any).getUserByIdentifier === 'function') {
+        existingByUsername = await (this.db as any).getUserByIdentifier(cleanUsername);
+      }
+      if (existingByUsername) {
+        throw new BadRequestError('A user with this username already exists. Please choose a different username or sign in.');
+      }
+    }
+
+    let passwordHash: string | undefined;
+    let salt: string | undefined;
+
+    if (data.password) {
+      if (data.password.length < 6) {
+        throw new BadRequestError('Password must be at least 6 characters');
+      }
+      const hashed = hashPassword(data.password);
+      passwordHash = hashed.hash;
+      salt = hashed.salt;
+    }
+
+    const user = await this.db.createUser({
+      name: displayName,
+      username: cleanUsername || undefined,
+      email: normalizedEmail,
+      passwordHash,
+      salt,
+      isSuperadmin: false,
+    });
 
     // Check if user already has a tenant membership
     let tenantMembership = await this.db.getUserTenantMembership(user.id);
