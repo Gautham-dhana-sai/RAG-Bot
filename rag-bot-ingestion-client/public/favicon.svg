@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <defs>
+    <!-- Background Chat Bubble Gradient -->
+    <linearGradient id="bubbleGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#4f46e5" />
+      <stop offset="55%" stop-color="#2563eb" />
+      <stop offset="100%" stop-color="#06b6d4" />
+    </linearGradient>
+
+    <!-- Bot Visor / Face Plate Gradient -->
+    <linearGradient id="visorGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#090d16" />
+      <stop offset="100%" stop-color="#1e293b" />
+    </linearGradient>
+
+    <!-- Glowing Cyan Eye Gradient -->
+    <linearGradient id="eyeGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#67e8f9" />
+      <stop offset="100%" stop-color="#06b6d4" />
+    </linearGradient>
+
+    <!-- Antenna Spark Gradient -->
+    <linearGradient id="sparkGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#a5f3fc" />
+      <stop offset="100%" stop-color="#38bdf8" />
+    </linearGradient>
+
+    <!-- Drop Shadow for depth in browser tab -->
+    <filter id="botShadow" x="-10%" y="-10%" width="125%" height="125%">
+      <feDropShadow dx="0" dy="2" stdDeviation="2.5" flood-color="#0f172a" flood-opacity="0.35" />
+    </filter>
+  </defs>
+
+  <!-- Main Chatbot Speech Bubble Silhouette -->
+  <path d="M14 6 H50 C56.6 6 62 11.4 62 18 V42 C62 48.6 56.6 54 50 54 H24 L12 62 V54 H14 C7.4 54 2 48.6 2 42 V18 C2 11.4 7.4 6 14 6 Z"
+        fill="url(#bubbleGrad)" filter="url(#botShadow)" />
+
+  <!-- Inner High-Tech Rim -->
+  <path d="M14 7 H50 C56.1 7 61 11.9 61 18 V42 C61 48.1 56.1 53 50 53 H23.5 L13 60 V53 H14 C7.9 53 3 48.1 3 42 V18 C3 11.9 7.9 7 14 7 Z"
+        stroke="#ffffff" stroke-width="1.2" stroke-opacity="0.25" fill="none" />
+
+  <!-- Antenna Stem & Glowing AI Beacon -->
+  <rect x="30.5" y="9" width="3" height="6" rx="1.5" fill="#f1f5f9" />
+  <circle cx="32" cy="9" r="3.5" fill="url(#sparkGrad)" />
+  <circle cx="32" cy="9" r="1.5" fill="#ffffff" />
+
+  <!-- Robot Headset Ear Pods -->
+  <rect x="9.5" y="23" width="4.5" height="13" rx="2.25" fill="#f1f5f9" />
+  <rect x="50" y="23" width="4.5" height="13" rx="2.25" fill="#f1f5f9" />
+
+  <!-- Robot Face Visor Screen -->
+  <rect x="13" y="15" width="38" height="29" rx="9" fill="url(#visorGrad)" stroke="#38bdf8" stroke-width="1.5" />
+
+  <!-- Glowing AI Eyes (Friendly High-Tech Pill Eyes) -->
+  <rect x="20" y="22" width="7.5" height="10" rx="3.75" fill="url(#eyeGrad)" />
+  <rect x="36.5" y="22" width="7.5" height="10" rx="3.75" fill="url(#eyeGrad)" />
+  
+  <!-- Eye Sparkles (Gleam Reflection) -->
+  <circle cx="22.5" cy="25" r="1.5" fill="#ffffff" />
+  <circle cx="39" cy="25" r="1.5" fill="#ffffff" />
+
+  <!-- Friendly Bot Smile Arc -->
+  <path d="M26 36.5 C28 39 36 39 38 36.5" stroke="url(#eyeGrad)" stroke-width="2.2" stroke-linecap="round" fill="none" />
+
+  <!-- RAG Vector Retrieval Linked Nodes -->
+  <circle cx="25" cy="48" r="2" fill="#ffffff" />
+  <circle cx="32" cy="48" r="2" fill="#67e8f9" />
+  <circle cx="39" cy="48" r="2" fill="#ffffff" />
+  <path d="M25 48 H39" stroke="#ffffff" stroke-width="1" stroke-dasharray="1.5 1.5" stroke-opacity="0.75" />
+</svg>
