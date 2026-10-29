@@ -23,6 +23,7 @@ export const PortalWorkspaceLayout: React.FC = memo(() => {
     loadPortalDocuments,
     deletePortal,
     setSelectedPortal,
+    loadPortals,
   } = usePortal();
 
   // Active portal: use selectedPortal if matches, or find by portalId param
@@ -82,6 +83,7 @@ export const PortalWorkspaceLayout: React.FC = memo(() => {
         if (job.status === 'READY' || job.status === 'FAILED') {
           stopJobPolling();
           loadPortalDocuments(pId);
+          loadPortals();
         }
       } catch {
         // keep polling
@@ -90,7 +92,7 @@ export const PortalWorkspaceLayout: React.FC = memo(() => {
 
     poll();
     pollingTimerRef.current = setInterval(poll, 2500);
-  }, [getClient, loadPortalDocuments, stopJobPolling]);
+  }, [getClient, loadPortalDocuments, loadPortals, stopJobPolling]);
 
   useEffect(() => {
     return () => {
@@ -107,8 +109,9 @@ export const PortalWorkspaceLayout: React.FC = memo(() => {
   const handleDocumentsUpdated = useCallback(() => {
     if (portalId) {
       loadPortalDocuments(portalId);
+      loadPortals();
     }
-  }, [portalId, loadPortalDocuments]);
+  }, [portalId, loadPortalDocuments, loadPortals]);
 
   const handleRetryUrl = useCallback(async (failedUrl: string) => {
     if (!portalId) return;
@@ -141,8 +144,9 @@ export const PortalWorkspaceLayout: React.FC = memo(() => {
 
   const handleBackToPortals = useCallback(() => {
     setSelectedPortal(null);
+    loadPortals();
     navigate('/portals');
-  }, [setSelectedPortal, navigate]);
+  }, [setSelectedPortal, loadPortals, navigate]);
 
   if (!portal && (isLoadingPortals || portals.length === 0)) {
     return (
