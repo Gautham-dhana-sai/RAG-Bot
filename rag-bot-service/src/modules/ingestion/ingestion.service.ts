@@ -10,6 +10,7 @@ import { UploadedFileItem, IngestionJobResponse } from './ingestion.types.js';
 import { IngestionJob, IngestionJobDocument, UrlIngestionJobResponse, UrlDownloadJobItem } from '../../types/index.js';
 import { NotFoundError } from '../../shared/errors.js';
 import { generateUuid, computeSha256 } from '../../shared/utils.js';
+import { validateFileOrPhotoUrl } from '../../shared/endpoint-validator.js';
 import { env } from '../../config/env.js';
 import { logger } from '../../shared/logger.js';
 
@@ -103,20 +104,16 @@ export class IngestionService {
       throw new Error(`Maximum of ${env.MAX_URLS_PER_BATCH} URLs can be submitted per batch.`);
     }
 
-    // Basic URL syntax check
+    // Validate that each submitted URL points to a file or photo, rejecting HTML webpages or endpoints
     const sanitizedUrls: string[] = [];
     for (const raw of urls) {
       const trimmed = typeof raw === 'string' ? raw.trim() : '';
       if (!trimmed) continue;
-      try {
-        const parsed = new URL(trimmed);
-        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-          throw new Error(`Invalid URL scheme "${parsed.protocol}" in URL: ${trimmed}. Only HTTP/HTTPS are supported.`);
-        }
-        sanitizedUrls.push(trimmed);
-      } catch (err: any) {
-        throw new Error(`Malformed URL "${trimmed}": ${err.message}`);
+      const fileValidation = validateFileOrPhotoUrl(trimmed);
+      if (!fileValidation.isValid) {
+        throw new Error(`Rejected URL "${trimmed}": ${fileValidation.reason}`);
       }
+      sanitizedUrls.push(trimmed);
     }
 
     if (sanitizedUrls.length === 0) {

@@ -3,6 +3,7 @@ import { IStorageAdapter } from '../../adapters/storage/storage.interface.js';
 import { AuthContext, Document, Entity, IngestionJob } from '../../types/index.js';
 import { BadRequestError, ConflictError, ForbiddenError, NotFoundError, UnauthorizedError } from '../../shared/errors.js';
 import { normalizePortfolioUrl } from '../../shared/password.js';
+import { verifyLiveEndpoint } from '../../shared/endpoint-validator.js';
 import { slugify } from '../../shared/utils.js';
 import { logger } from '../../shared/logger.js';
 import { DocumentsService, getPortfolioFolderPrefix } from '../documents/documents.service.js';
@@ -124,6 +125,14 @@ export class PortfoliosService {
       normalizedUrl = normalizePortfolioUrl(data.url);
     } catch {
       throw new BadRequestError('Please provide a valid portal or website URL');
+    }
+
+    // Verify endpoint availability on live internet (including backend health checks)
+    const verification = await verifyLiveEndpoint(normalizedUrl);
+    if (!verification.isLive) {
+      throw new BadRequestError(
+        `Unable to register portal: ${verification.reason || 'Endpoint is not reachable on the live internet.'}`
+      );
     }
 
     // Check if portal URL already exists anywhere
@@ -291,8 +300,10 @@ export class PortfoliosService {
         .replace(/\(\s*\)/g, '')
         .replace(/\[\s*$/g, '')
         .replace(/\(\s*$/g, '')
-        .replace(/\s+([.,!?;:])/g, '$1')
-        .replace(/\s{2,}/g, ' ')
+        .replace(/[ \t]+([.,!?;:])/g, '$1')
+        .replace(/[^\S\r\n]{2,}/g, ' ')
+        .replace(/([^\n])\s*([•*]|\s-\s)\s*/g, '$1\n• ')
+        .replace(/\n{3,}/g, '\n\n')
         .trim();
 
       return {

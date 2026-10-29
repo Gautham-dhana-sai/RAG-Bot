@@ -83,6 +83,10 @@ coverage/
 */coverage/
 .nyc_output/
 .vitest/
+test-storage/
+*/test-storage/
+memory-test-storage/
+*/memory-test-storage/
 
 # ------------------------------------------------------------------------------
 # Logs & Diagnostic Files

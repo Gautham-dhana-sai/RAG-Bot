@@ -112,3 +112,14 @@ export interface UserSessionData {
   };
   token: string;
 }
+
+export interface QAHistoryItem {
+  id: string;
+  portalId: string;
+  portfolioId?: string; // backwards compatibility
+  question: string;
+  answer: string;
+  citations: any[];
+  timestamp: string;
+  isError?: boolean;
+}
