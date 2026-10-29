@@ -19,10 +19,11 @@ export const PortalsDashboardView: React.FC = memo(() => {
     loadPortalDocuments,
   } = usePortal();
 
-  // Reset selected portal on dashboard view mount
+  // Reset selected portal on dashboard view mount and fetch fresh portal list
   useEffect(() => {
     setSelectedPortal(null);
-  }, [setSelectedPortal]);
+    loadPortals();
+  }, [setSelectedPortal, loadPortals]);
 
   const [newPortalUrl, setNewPortalUrl] = useState('');
   const [newPortalName, setNewPortalName] = useState('');
