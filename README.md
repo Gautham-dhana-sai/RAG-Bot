@@ -1,28 +1,27 @@
 # RAG-BOT: Enterprise Multi-Tenant RAG Platform
 
-> **Production-minded, multi-tenant Retrieval-Augmented Generation (RAG) platform with decoupled ingestion and developer playground.**
+> **Production-minded, multi-tenant Retrieval-Augmented Generation (RAG) platform with decoupled ingestion and question verification.**
 
 ---
 
 ## Repositories
 
-This workspace contains three independent, decoupled repositories:
+This workspace contains two independent, decoupled applications:
 
 1. [`rag-bot-service`](./rag-bot-service) — Modular monolith backend implementing the core RAG API, hybrid retrieval engine (pgvector dense search + tsvector sparse search with Reciprocal Rank Fusion), async ingestion pipeline, user onboarding & registration, conversational history manager, query rewriter, local Nest.js server, and AWS Lambda serverless handler.
-2. [`rag-bot-ingestion-client`](./rag-bot-ingestion-client) — Standalone React + TypeScript frontend for selecting entity targets, uploading multiple files with drag-and-drop, tracking async ingestion status, and verifying evidence-backed citations.
-3. [`rag-bot-playground`](./rag-bot-playground) — Developer-facing RAG testing and demonstration UI for interactive conversations, multi-strategy retrieval preset comparison, candidate diagnostics, safe cURL export, and 1-click workspace switching.
+2. [`rag-bot-ingestion-client`](./rag-bot-ingestion-client) — Standalone React + TypeScript frontend for selecting entity targets, uploading multiple files with drag-and-drop, importing from URLs via a dedicated download queue, tracking async ingestion status, and verifying evidence-backed retrieval questions.
 
 ---
 
 ## Architecture Diagram
 
 ```text
- ┌──────────────────────────────────┐        ┌──────────────────────────────────┐
- │     rag-bot-ingestion-client     │        │        rag-bot-playground        │
- │   (React + TypeScript + Vite)    │        │   (React + TypeScript + Vite)    │
- └─────────────────┬────────────────┘        └─────────────────┬────────────────┘
-                   │                                           │
-                   │               REST API / CORS             │
+ ┌──────────────────────────────────┐
+ │     rag-bot-ingestion-client     │
+ │   (React + TypeScript + Vite)    │
+ └─────────────────┬────────────────┘
+                   │
+                   │               REST API / CORS
                    └───────────────────────┬───────────────────┘
                                            │
                                            ▼
@@ -82,8 +81,7 @@ This workspace contains three independent, decoupled repositories:
 | 15 | Lambda handler invocable with API Gateway event | **PASSED** | `tests/integration/lambda-handler.test.ts` |
 | 16 | Lambda ZIP contains configured entry point | **PASSED** | `scripts/package-lambda.ts` (1.72 MB ZIP) |
 | 17 | Ingestion client can submit files & poll status | **PASSED** | `rag-bot-ingestion-client/tests/` |
-| 18 | Playground tests RAG retrieval, presets & logs | **PASSED** | `rag-bot-playground/tests/` |
-| 19 | Registration & 1-click workspace onboarding | **PASSED** | `tests/integration/auth-onboarding.test.ts` |
+| 18 | Registration & 1-click workspace onboarding | **PASSED** | `tests/integration/auth-onboarding.test.ts` |
 
 ---
 
@@ -100,7 +98,7 @@ npm run dev
 
 Server runs at `http://localhost:3000` (Swagger docs at `http://localhost:3000/documentation`).
 
-### Step 2: Start `rag-bot-ingestion-client` (Document Upload UI)
+### Step 2: Start `rag-bot-ingestion-client` (Document Upload & Retrieval UI)
 
 In a separate terminal:
 
@@ -113,24 +111,11 @@ npm run dev
 
 Ingestion Client runs at `http://localhost:5173`.
 
-### Step 3: Start `rag-bot-playground` (Interactive RAG Testing & Debugging UI)
+### Step 3: Run the Full Platform Workflow
 
-In a third terminal:
-
-```bash
-cd rag-bot-playground
-npm install
-npm test
-npm run dev
-```
-
-Playground runs at `http://localhost:5174`.
-
-### Step 4: Run the Full Platform Workflow
-
-1. Open Ingestion Client at `http://localhost:5173` or Playground at `http://localhost:5174`.
+1. Open Ingestion Client at `http://localhost:5173`.
 2. Connect with **1-click** using pre-configured profiles (`Alex Chen @ Acme Cloud`, `Dr. Jane Doe @ BioHealth Global`), or click **"Register New Workspace"** to provision your own tenant and portfolio. No manual UUIDs or API keys needed!
-3. Drag and drop sample files from `rag-bot-service/fixtures` (`sample-resume.txt`, `sample-portfolio.md`) and submit them for indexing.
-4. Run side-by-side retrieval preset comparisons (Hybrid RRF vs Dense vs Sparse) and inspect dense/sparse candidate rankings and verified source citations.
-5. Inspect the live HTTP Inspector: view sanitized headers (`Authorization: Bearer [REDACTED_SECRET_TOKEN]`) and copy safe cURL commands.
+3. Drag and drop sample files from `rag-bot-service/fixtures` (`sample-resume.txt`, `sample-portfolio.md`) or import via file/photo URLs and submit them for indexing.
+4. Once documents are indexed into the knowledge base, use the embedded verification question box to query and verify semantic retrieval and grounded citations.
+
 

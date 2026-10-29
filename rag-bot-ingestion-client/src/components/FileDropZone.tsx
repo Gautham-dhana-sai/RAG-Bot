@@ -2,12 +2,18 @@ import React, { useRef, useState } from 'react';
 import { FileItem } from '../types';
 
 interface FileDropZoneProps {
-  files: FileItem[];
+  files?: FileItem[];
   onFilesSelected: (files: FileItem[]) => void;
   disabled?: boolean;
+  showFileList?: boolean;
 }
 
-export const FileDropZone: React.FC<FileDropZoneProps> = ({ files, onFilesSelected, disabled }) => {
+export const FileDropZone: React.FC<FileDropZoneProps> = ({
+  files = [],
+  onFilesSelected,
+  disabled,
+  showFileList = true,
+}) => {
   const [isDragOver, setIsDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -32,7 +38,7 @@ export const FileDropZone: React.FC<FileDropZoneProps> = ({ files, onFilesSelect
       type: f.type || 'unknown',
     }));
 
-    onFilesSelected([...files, ...newFiles]);
+    onFilesSelected([...(files || []), ...newFiles]);
   };
 
   const handleFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -45,11 +51,11 @@ export const FileDropZone: React.FC<FileDropZoneProps> = ({ files, onFilesSelect
       type: f.type || 'unknown',
     }));
 
-    onFilesSelected([...files, ...newFiles]);
+    onFilesSelected([...(files || []), ...newFiles]);
   };
 
   const handleRemove = (index: number) => {
-    const updated = [...files];
+    const updated = [...(files || [])];
     updated.splice(index, 1);
     onFilesSelected(updated);
   };
@@ -80,11 +86,11 @@ export const FileDropZone: React.FC<FileDropZoneProps> = ({ files, onFilesSelect
         </div>
       </div>
 
-      {files.length > 0 && (
+      {showFileList && (files || []).length > 0 && (
         <div className="selected-files">
           <h4>Selected Documents ({files.length})</h4>
           <ul className="file-list">
-            {files.map((f, i) => (
+            {(files || []).map((f, i) => (
               <li key={`${f.name}-${i}`} className="file-item">
                 <span className="file-name">{f.name}</span>
                 <span className="file-meta">

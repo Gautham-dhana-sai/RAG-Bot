@@ -1,8 +1,12 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { IngestionApiClient } from '../src/api';
 
 describe('IngestionApiClient', () => {
-  const client = new IngestionApiClient('http://localhost:3000', 'test-token');
+  let client: IngestionApiClient;
+
+  beforeEach(() => {
+    client = new IngestionApiClient('http://localhost:3000');
+  });
 
   it('should register a new account with email and password', async () => {
     global.fetch = vi.fn().mockResolvedValue({
@@ -21,7 +25,7 @@ describe('IngestionApiClient', () => {
       'http://localhost:3000/v1/auth/register',
       expect.objectContaining({
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: expect.objectContaining({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ email: 'test@example.com', password: 'Password123!' }),
       })
     );
@@ -44,43 +48,45 @@ describe('IngestionApiClient', () => {
       'http://localhost:3000/v1/auth/login',
       expect.objectContaining({
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: expect.objectContaining({ 'Content-Type': 'application/json' }),
       })
     );
   });
 
-  it('should list user portfolios', async () => {
-    const mockPortfolios = [
+  it('should list user portals', async () => {
+    client.setAuthToken('ragbot_sess_login999');
+    const mockPortals = [
       {
         id: 'port-1',
         name: 'Alex AI Portfolio',
-        portfolioUrl: 'https://alex.dev/portfolio',
+        portalUrl: 'https://alex.dev/portfolio',
         documentCount: 3,
       },
     ];
 
     global.fetch = vi.fn().mockResolvedValue({
       ok: true,
-      json: async () => mockPortfolios,
+      json: async () => mockPortals,
     });
 
     const list = await client.listPortfolios();
     expect(list.length).toBe(1);
     expect(list[0].name).toBe('Alex AI Portfolio');
     expect(global.fetch).toHaveBeenCalledWith(
-      'http://localhost:3000/v1/portfolios',
+      'http://localhost:3000/v1/portals',
       expect.objectContaining({
         method: 'GET',
-        headers: { Authorization: 'Bearer ragbot_sess_login999' },
+        headers: expect.objectContaining({ Authorization: 'Bearer ragbot_sess_login999' }),
       })
     );
   });
 
-  it('should create a portfolio with a portfolio URL', async () => {
+  it('should create a portal with a portal URL', async () => {
+    client.setAuthToken('ragbot_sess_login999');
     const mockCreated = {
       id: 'port-new',
       name: 'sarah.engineer',
-      portfolioUrl: 'https://sarah.engineer',
+      portalUrl: 'https://sarah.engineer',
       documentCount: 0,
     };
 
@@ -92,7 +98,7 @@ describe('IngestionApiClient', () => {
     const created = await client.createPortfolio('https://sarah.engineer');
     expect(created.id).toBe('port-new');
     expect(global.fetch).toHaveBeenCalledWith(
-      'http://localhost:3000/v1/portfolios',
+      'http://localhost:3000/v1/portals',
       expect.objectContaining({
         method: 'POST',
         headers: expect.objectContaining({
@@ -105,6 +111,7 @@ describe('IngestionApiClient', () => {
   });
 
   it('should submit files to a portfolio and track job status', async () => {
+    client.setAuthToken('ragbot_sess_login999');
     const mockJob = {
       jobId: 'job-999',
       id: 'job-999',
@@ -140,6 +147,7 @@ describe('IngestionApiClient', () => {
   });
 
   it('should submit files with proper FormData and headers (Legacy Tenant/Entity check)', async () => {
+    client.setAuthToken('ragbot_sess_login999');
     const mockResponse = {
       jobId: 'job-123',
       entityId: 'entity-abc',

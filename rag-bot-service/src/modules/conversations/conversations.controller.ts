@@ -231,8 +231,10 @@ export class ConversationsController {
       .replace(/\(\s*\)/g, '')
       .replace(/\[\s*$/g, '')
       .replace(/\(\s*$/g, '')
-      .replace(/\s+([.,!?;:])/g, '$1')
-      .replace(/\s{2,}/g, ' ')
+      .replace(/[ \t]+([.,!?;:])/g, '$1')
+      .replace(/[^\S\r\n]{2,}/g, ' ')
+      .replace(/([^\n])\s*([•*]|\s-\s)\s*/g, '$1\n• ')
+      .replace(/\n{3,}/g, '\n\n')
       .trim();
 
     const responseBody: any = {
