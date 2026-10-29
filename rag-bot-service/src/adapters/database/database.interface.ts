@@ -46,6 +46,7 @@ export interface IDatabaseAdapter {
   // Documents
   getDocumentById(tenantId: string, entityId: string, documentId: string): Promise<Document | null>;
   getDocumentByHash(entityId: string, contentHash: string): Promise<Document | null>;
+  getDocumentByObjectKey(objectKey: string): Promise<Document | null>;
   getDocumentsByEntity(tenantId: string, entityId: string): Promise<Document[]>;
   getDocumentCountByEntity(tenantId: string, entityId: string): Promise<number>;
   createDocument(data: {
@@ -61,6 +62,19 @@ export interface IDatabaseAdapter {
     status?: Document['status'];
   }): Promise<Document>;
   updateDocumentStatus(tenantId: string, documentId: string, status: Document['status'], errorMessage?: string): Promise<void>;
+  updateDocumentMetadata?(
+    tenantId: string,
+    documentId: string,
+    data: {
+      originalFilename?: string;
+      mimeType?: string;
+      sizeBytes?: number;
+      contentHash?: string;
+      objectKey?: string;
+      status?: Document['status'];
+      errorMessage?: string;
+    }
+  ): Promise<void>;
   deleteDocument(tenantId: string, entityId: string, documentId: string): Promise<boolean>;
 
   // Document Versions
@@ -77,10 +91,12 @@ export interface IDatabaseAdapter {
 
   // Ingestion Jobs
   getJobById(tenantId: string, entityId: string, jobId: string): Promise<IngestionJob | null>;
-  createIngestionJob(data: { id?: string; tenantId: string; entityId: string; totalDocuments: number }): Promise<IngestionJob>;
+  createIngestionJob(data: { id?: string; tenantId: string; entityId: string; totalDocuments: number; sourceType?: string; metadata?: Record<string, any> }): Promise<IngestionJob>;
   updateJobStatus(tenantId: string, jobId: string, status: IngestionJob['status'], details?: { processed?: number; failed?: number; errorSummary?: string }): Promise<void>;
-  createJobDocument(tenantId: string, jobId: string, documentId: string): Promise<IngestionJobDocument>;
+  createJobDocument(tenantId: string, jobId: string, documentId: string, extra?: { sourceUrl?: string; stage?: string; downloadMetadata?: Record<string, any> }): Promise<IngestionJobDocument>;
   updateJobDocumentStatus(tenantId: string, jobId: string, documentId: string, status: Document['status'], errorMessage?: string): Promise<void>;
+  updateJobDocumentStage(tenantId: string, jobId: string, documentId: string, stage: string, errorMessage?: string, downloadMetadata?: Record<string, any>): Promise<void>;
+  getJobDocumentByDocumentId(documentId: string): Promise<IngestionJobDocument | null>;
   getJobDocuments(tenantId: string, jobId: string): Promise<(IngestionJobDocument & { document?: Document })[]>;
 
   // Chunks & Hybrid Search

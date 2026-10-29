@@ -30,6 +30,10 @@ const envSchema = z.object({
 
   QUEUE_ADAPTER: z.enum(['local', 'sqs']).default('local'),
   SQS_QUEUE_URL: z.string().optional().default(''),
+  URL_DOWNLOAD_QUEUE_URL: z.string().optional().default(process.env.SQS_DOWNLOAD_QUEUE_URL || ''),
+  DOWNLOAD_MAX_REDIRECTS: z.coerce.number().default(3),
+  DOWNLOAD_TIMEOUT_MS: z.coerce.number().default(30000),
+  MAX_URLS_PER_BATCH: z.coerce.number().default(20),
 
   AI_PROVIDER: z.enum(['mock', 'openai', 'cohere', 'gemini']).default('gemini'),
   OPENAI_API_KEY: z.string().optional().default(''),

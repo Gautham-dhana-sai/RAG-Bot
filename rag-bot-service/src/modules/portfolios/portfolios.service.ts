@@ -343,6 +343,27 @@ export class PortfoliosService {
   }
 
   /**
+   * Submit document and image URLs for asynchronous download and ingestion.
+   */
+  async submitUrlIngestionJob(
+    auth: AuthContext,
+    portfolioReference: string,
+    urls: string[]
+  ): Promise<any> {
+    const { tenantId, entity } = await this.resolvePortfolio(auth, portfolioReference);
+    const res = await this.ingestionService.submitUrlIngestionJob({
+      tenantId,
+      entityId: entity.id,
+      urls,
+      portfolioUrl: entity.portfolioUrl || entity.slug,
+    });
+    return {
+      id: res.jobId,
+      ...res,
+    };
+  }
+
+  /**
    * Get ingestion job status for a portfolio
    */
   async getJobStatus(

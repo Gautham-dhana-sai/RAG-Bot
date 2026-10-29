@@ -105,6 +105,42 @@ export class IngestionController {
     });
   }
 
+  @Post('urls')
+  @HttpCode(HttpStatus.ACCEPTED)
+  @ApiOperation({ summary: 'Submit document and image URLs for ingestion' })
+  async submitUrls(
+    @Req() req: Request,
+    @Param('tenantId') tenantId: string,
+    @Param('entityId') entityId: string,
+    @Body() body: any
+  ) {
+    const entity = await this.authService.authorizeEntityAccess(req.authContext!, tenantId, entityId, true);
+    const rawUrls = Array.isArray(body)
+      ? body
+      : Array.isArray(body?.urls)
+        ? body.urls
+        : body?.url
+          ? [body.url]
+          : [];
+
+    if (!Array.isArray(rawUrls) || rawUrls.length === 0) {
+      throw new BadRequestError('Request must include a non-empty "urls" array.');
+    }
+
+    const schema = z.array(z.string().url('Each item must be a valid HTTP/HTTPS URL'));
+    const parsed = schema.safeParse(rawUrls);
+    if (!parsed.success) {
+      throw new BadRequestError('Invalid URLs submitted', parsed.error.format());
+    }
+
+    return this.ingestionService.submitUrlIngestionJob({
+      tenantId,
+      entityId,
+      urls: parsed.data,
+      portfolioUrl: entity.portfolioUrl || entity.slug,
+    });
+  }
+
   @Get(':jobId')
   @ApiOperation({ summary: 'Get ingestion job status' })
   async getJobStatus(

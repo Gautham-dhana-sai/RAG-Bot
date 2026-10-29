@@ -486,6 +486,30 @@ export class PostgresDatabaseAdapter implements IDatabaseAdapter {
     };
   }
 
+  async getDocumentByObjectKey(objectKey: string): Promise<Document | null> {
+    const res = await this.pool.query(
+      'SELECT * FROM documents WHERE object_key = $1 LIMIT 1',
+      [objectKey]
+    );
+    if (res.rows.length === 0) return null;
+    const r = res.rows[0];
+    return {
+      id: r.id,
+      tenantId: r.tenant_id,
+      entityId: r.entity_id,
+      originalFilename: r.original_filename,
+      mimeType: r.mime_type,
+      sizeBytes: Number(r.size_bytes),
+      contentHash: r.content_hash,
+      objectKey: r.object_key,
+      isPublic: r.is_public,
+      status: r.status,
+      errorMessage: r.error_message,
+      createdAt: r.created_at,
+      updatedAt: r.updated_at,
+    };
+  }
+
   async getDocumentsByEntity(tenantId: string, entityId: string): Promise<Document[]> {
     if (!isValidUuid(tenantId) || !isValidUuid(entityId)) return [];
     const res = await this.pool.query(
@@ -576,6 +600,75 @@ export class PostgresDatabaseAdapter implements IDatabaseAdapter {
     );
   }
 
+  async updateDocumentMetadata(
+    tenantId: string,
+    documentId: string,
+    data: {
+      originalFilename?: string;
+      mimeType?: string;
+      sizeBytes?: number;
+      contentHash?: string;
+      objectKey?: string;
+      status?: Document['status'];
+      errorMessage?: string;
+    }
+  ): Promise<void> {
+    const sizeParam = data.sizeBytes !== undefined && data.sizeBytes > 0 ? data.sizeBytes : null;
+    try {
+      await this.pool.query(
+        `UPDATE documents SET
+           original_filename = COALESCE($1, original_filename),
+           mime_type = COALESCE($2, mime_type),
+           size_bytes = COALESCE($3, size_bytes),
+           content_hash = COALESCE($4, content_hash),
+           object_key = COALESCE($5, object_key),
+           status = COALESCE($6, status),
+           error_message = COALESCE($7, error_message),
+           updated_at = NOW()
+         WHERE tenant_id = $8 AND id = $9`,
+        [
+          data.originalFilename || null,
+          data.mimeType || null,
+          sizeParam,
+          data.contentHash || null,
+          data.objectKey || null,
+          data.status || null,
+          data.errorMessage || null,
+          tenantId,
+          documentId,
+        ]
+      );
+    } catch (err: any) {
+      // If updating content_hash encounters a unique constraint violation (code 23505),
+      // update all metadata EXCEPT content_hash so size_bytes and filename are not lost
+      if (err.code === '23505') {
+        await this.pool.query(
+          `UPDATE documents SET
+             original_filename = COALESCE($1, original_filename),
+             mime_type = COALESCE($2, mime_type),
+             size_bytes = COALESCE($3, size_bytes),
+             object_key = COALESCE($4, object_key),
+             status = COALESCE($5, status),
+             error_message = COALESCE($6, error_message),
+             updated_at = NOW()
+           WHERE tenant_id = $7 AND id = $8`,
+          [
+            data.originalFilename || null,
+            data.mimeType || null,
+            sizeParam,
+            data.objectKey || null,
+            data.status || null,
+            data.errorMessage || null,
+            tenantId,
+            documentId,
+          ]
+        );
+      } else {
+        throw err;
+      }
+    }
+  }
+
   async deleteDocument(tenantId: string, entityId: string, documentId: string): Promise<boolean> {
     const res = await this.pool.query(
       'DELETE FROM documents WHERE tenant_id = $1 AND entity_id = $2 AND id = $3 RETURNING id',
@@ -651,13 +744,15 @@ export class PostgresDatabaseAdapter implements IDatabaseAdapter {
     };
   }
 
-  async createIngestionJob(data: { id?: string; tenantId: string; entityId: string; totalDocuments: number }): Promise<IngestionJob> {
+  async createIngestionJob(data: { id?: string; tenantId: string; entityId: string; totalDocuments: number; sourceType?: string; metadata?: Record<string, any> }): Promise<IngestionJob> {
     const id = data.id || generateUuid();
+    const sourceType = data.sourceType || 'DIRECT_UPLOAD';
+    const metadata = JSON.stringify(data.metadata || {});
     const res = await this.pool.query(
-      `INSERT INTO ingestion_jobs (id, tenant_id, entity_id, status, total_documents)
-       VALUES ($1, $2, $3, 'PENDING', $4)
+      `INSERT INTO ingestion_jobs (id, tenant_id, entity_id, status, total_documents, source_type, metadata)
+       VALUES ($1, $2, $3, 'PENDING', $4, $5, $6::jsonb)
        RETURNING *`,
-      [id, data.tenantId, data.entityId, data.totalDocuments]
+      [id, data.tenantId, data.entityId, data.totalDocuments, sourceType, metadata]
     );
     const r = res.rows[0];
     return {
@@ -665,11 +760,13 @@ export class PostgresDatabaseAdapter implements IDatabaseAdapter {
       tenantId: r.tenant_id,
       entityId: r.entity_id,
       status: r.status,
+      sourceType: r.source_type,
       totalDocuments: r.total_documents,
       processedDocuments: r.processed_documents,
       failedDocuments: r.failed_documents,
       retryCount: r.retry_count,
       errorSummary: r.error_summary,
+      metadata: r.metadata,
       createdAt: r.created_at,
       updatedAt: r.updated_at,
     };
@@ -701,13 +798,16 @@ export class PostgresDatabaseAdapter implements IDatabaseAdapter {
     );
   }
 
-  async createJobDocument(tenantId: string, jobId: string, documentId: string): Promise<IngestionJobDocument> {
+  async createJobDocument(tenantId: string, jobId: string, documentId: string, extra?: { sourceUrl?: string; stage?: string; downloadMetadata?: Record<string, any> }): Promise<IngestionJobDocument> {
     const id = generateUuid();
+    const sourceUrl = extra?.sourceUrl || null;
+    const stage = extra?.stage || 'PENDING';
+    const downloadMetadata = JSON.stringify(extra?.downloadMetadata || {});
     const res = await this.pool.query(
-      `INSERT INTO ingestion_job_documents (id, tenant_id, job_id, document_id, status)
-       VALUES ($1, $2, $3, $4, 'PENDING')
+      `INSERT INTO ingestion_job_documents (id, tenant_id, job_id, document_id, status, source_url, stage, download_metadata)
+       VALUES ($1, $2, $3, $4, 'PENDING', $5, $6, $7::jsonb)
        RETURNING *`,
-      [id, tenantId, jobId, documentId]
+      [id, tenantId, jobId, documentId, sourceUrl, stage, downloadMetadata]
     );
     const r = res.rows[0];
     return {
@@ -716,7 +816,10 @@ export class PostgresDatabaseAdapter implements IDatabaseAdapter {
       jobId: r.job_id,
       documentId: r.document_id,
       status: r.status,
+      sourceUrl: r.source_url,
+      stage: r.stage,
       errorMessage: r.error_message,
+      downloadMetadata: r.download_metadata,
       createdAt: r.created_at,
       updatedAt: r.updated_at,
     };
@@ -728,6 +831,44 @@ export class PostgresDatabaseAdapter implements IDatabaseAdapter {
       'UPDATE ingestion_job_documents SET status = $1, error_message = $2, updated_at = NOW() WHERE tenant_id = $3 AND job_id = $4 AND document_id = $5',
       [status, errorMessage || null, tenantId, jobId, documentId]
     );
+  }
+
+  async updateJobDocumentStage(tenantId: string, jobId: string, documentId: string, stage: string, errorMessage?: string, downloadMetadata?: Record<string, any>): Promise<void> {
+    if (!isValidUuid(tenantId) || !isValidUuid(jobId) || !isValidUuid(documentId)) return;
+    if (downloadMetadata) {
+      await this.pool.query(
+        'UPDATE ingestion_job_documents SET stage = $1, error_message = $2, download_metadata = COALESCE(download_metadata, \'{}\'::jsonb) || $3::jsonb, updated_at = NOW() WHERE tenant_id = $4 AND job_id = $5 AND document_id = $6',
+        [stage, errorMessage || null, JSON.stringify(downloadMetadata), tenantId, jobId, documentId]
+      );
+    } else {
+      await this.pool.query(
+        'UPDATE ingestion_job_documents SET stage = $1, error_message = $2, updated_at = NOW() WHERE tenant_id = $3 AND job_id = $4 AND document_id = $5',
+        [stage, errorMessage || null, tenantId, jobId, documentId]
+      );
+    }
+  }
+
+  async getJobDocumentByDocumentId(documentId: string): Promise<IngestionJobDocument | null> {
+    if (!isValidUuid(documentId)) return null;
+    const res = await this.pool.query(
+      'SELECT * FROM ingestion_job_documents WHERE document_id = $1 ORDER BY created_at DESC LIMIT 1',
+      [documentId]
+    );
+    if (res.rows.length === 0) return null;
+    const r = res.rows[0];
+    return {
+      id: r.id,
+      tenantId: r.tenant_id,
+      jobId: r.job_id,
+      documentId: r.document_id,
+      status: r.status,
+      sourceUrl: r.source_url,
+      stage: r.stage,
+      errorMessage: r.error_message,
+      downloadMetadata: r.download_metadata,
+      createdAt: r.created_at,
+      updatedAt: r.updated_at,
+    };
   }
 
   async getJobDocuments(tenantId: string, jobId: string): Promise<(IngestionJobDocument & { document?: Document })[]> {

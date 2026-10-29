@@ -241,6 +241,38 @@ export class IngestionApiClient {
   }
   submitPortfolioFiles = (ref: string, files: File[]) => this.submitPortalFiles(ref, files);
 
+  async submitPortalUrls(
+    portalReference: string,
+    urls: string[]
+  ): Promise<IngestionSubmitResponse> {
+    let response = await this.request(
+      `${this.baseUrl}/v1/portals/${encodeURIComponent(portalReference)}/urls`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ urls }),
+      }
+    );
+    if (!response.ok && response.status === 404) {
+      response = await this.request(
+        `${this.baseUrl}/v1/portfolios/${encodeURIComponent(portalReference)}/urls`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ urls }),
+        }
+      );
+    }
+
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err.error?.message || err.message || `URL submission failed with HTTP ${response.status}`);
+    }
+
+    return response.json();
+  }
+  submitPortfolioUrls = (ref: string, urls: string[]) => this.submitPortalUrls(ref, urls);
+
   async getPortalJobStatus(
     portalReference: string,
     jobId: string

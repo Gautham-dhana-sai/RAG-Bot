@@ -139,6 +139,39 @@ export class PortfoliosController {
     return this.portfoliosService.submitIngestionJob(req.authContext!, portfolioReference, filesToUpload);
   }
 
+  @Post([':portfolioReference/urls', ':portfolioReference/ingestion-urls'])
+  @HttpCode(HttpStatus.ACCEPTED)
+  @ApiOperation({ summary: 'Submit document and image URLs for ingestion into a portfolio' })
+  async submitUrls(
+    @Req() req: Request,
+    @Param('portfolioReference') portfolioReference: string,
+    @Body() body: any
+  ) {
+    const rawUrls = Array.isArray(body)
+      ? body
+      : Array.isArray(body?.urls)
+        ? body.urls
+        : body?.url
+          ? [body.url]
+          : [];
+
+    if (!Array.isArray(rawUrls) || rawUrls.length === 0) {
+      throw new BadRequestError('Request must include a non-empty "urls" array.');
+    }
+
+    const schema = z.array(z.string().url('Each item must be a valid HTTP/HTTPS URL'));
+    const parsed = schema.safeParse(rawUrls);
+    if (!parsed.success) {
+      throw new BadRequestError('Invalid URLs submitted', parsed.error.format());
+    }
+
+    return this.portfoliosService.submitUrlIngestionJob(
+      req.authContext!,
+      portfolioReference,
+      parsed.data
+    );
+  }
+
   @Get(':portfolioReference/ingestion-jobs/:jobId')
   @ApiOperation({ summary: 'Get status of an ingestion job for a portfolio' })
   async getJobStatus(

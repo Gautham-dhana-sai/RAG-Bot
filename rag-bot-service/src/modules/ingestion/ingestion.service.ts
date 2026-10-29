@@ -1,13 +1,16 @@
+import path from 'path';
 import { IDatabaseAdapter } from '../../adapters/database/database.interface.js';
 import { IStorageAdapter } from '../../adapters/storage/storage.interface.js';
 import { IQueueAdapter, IngestionMessagePayload } from '../../adapters/queue/queue.interface.js';
-import { DocumentsService } from '../documents/documents.service.js';
+import { DocumentsService, buildS3ObjectKey } from '../documents/documents.service.js';
 import { ExtractionService } from '../extraction/extraction.service.js';
 import { ChunkingService } from '../chunking/chunking.service.js';
 import { EmbeddingsService } from '../embeddings/embeddings.service.js';
 import { UploadedFileItem, IngestionJobResponse } from './ingestion.types.js';
-import { IngestionJob, IngestionJobDocument } from '../../types/index.js';
+import { IngestionJob, IngestionJobDocument, UrlIngestionJobResponse, UrlDownloadJobItem } from '../../types/index.js';
 import { NotFoundError } from '../../shared/errors.js';
+import { generateUuid, computeSha256 } from '../../shared/utils.js';
+import { env } from '../../config/env.js';
 import { logger } from '../../shared/logger.js';
 
 export class IngestionService {
@@ -79,6 +82,178 @@ export class IngestionService {
       statusUrl,
       createdAt: job.createdAt.toISOString(),
     };
+  }
+
+  /**
+   * Submit multiple URLs for downloading and subsequent ingestion.
+   */
+  async submitUrlIngestionJob(params: {
+    tenantId: string;
+    entityId: string;
+    urls: string[];
+    portfolioUrl?: string;
+  }): Promise<UrlIngestionJobResponse> {
+    const { tenantId, entityId, urls, portfolioUrl } = params;
+
+    if (!urls || urls.length === 0) {
+      throw new Error('At least one URL must be provided for ingestion.');
+    }
+
+    if (urls.length > env.MAX_URLS_PER_BATCH) {
+      throw new Error(`Maximum of ${env.MAX_URLS_PER_BATCH} URLs can be submitted per batch.`);
+    }
+
+    // Basic URL syntax check
+    const sanitizedUrls: string[] = [];
+    for (const raw of urls) {
+      const trimmed = typeof raw === 'string' ? raw.trim() : '';
+      if (!trimmed) continue;
+      try {
+        const parsed = new URL(trimmed);
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+          throw new Error(`Invalid URL scheme "${parsed.protocol}" in URL: ${trimmed}. Only HTTP/HTTPS are supported.`);
+        }
+        sanitizedUrls.push(trimmed);
+      } catch (err: any) {
+        throw new Error(`Malformed URL "${trimmed}": ${err.message}`);
+      }
+    }
+
+    if (sanitizedUrls.length === 0) {
+      throw new Error('No valid URLs provided.');
+    }
+
+    // 1. Create Ingestion Job record with source_type = 'URL_IMPORT'
+    const job = await this.db.createIngestionJob({
+      tenantId,
+      entityId,
+      totalDocuments: sanitizedUrls.length,
+      sourceType: 'URL_IMPORT',
+      metadata: { originalUrls: sanitizedUrls },
+    });
+
+    const urlJobItems: UrlDownloadJobItem[] = [];
+
+    // 2. Create job documents and enqueue URL download messages
+    for (const url of sanitizedUrls) {
+      const documentId = generateUuid();
+
+      let filename = 'downloaded-file';
+      try {
+        const u = new URL(url);
+        filename = path.basename(u.pathname) || 'downloaded-file';
+      } catch {
+        // fallback
+      }
+
+      let folderPrefix = portfolioUrl;
+      if (!folderPrefix) {
+        const entity = await this.db.getEntityById(tenantId, entityId);
+        folderPrefix = entity?.portfolioUrl || entity?.slug || `${tenantId}/${entityId}`;
+      }
+      const initialObjectKey = buildS3ObjectKey(folderPrefix, filename);
+      const initialContentHash = computeSha256(`url:${entityId}:${url}`);
+
+      // Create document record first to satisfy fk_job_doc_document foreign key constraint
+      const doc = await this.db.createDocument({
+        id: documentId,
+        tenantId,
+        entityId,
+        originalFilename: filename,
+        mimeType: 'application/octet-stream',
+        sizeBytes: 0,
+        contentHash: initialContentHash,
+        objectKey: initialObjectKey,
+        isPublic: true,
+        status: 'PENDING',
+      });
+      const resolvedDocId = doc.id;
+
+      await this.db.createJobDocument(tenantId, job.id, resolvedDocId, {
+        sourceUrl: url,
+        stage: 'QUEUED_FOR_DOWNLOAD',
+      });
+
+      await this.queue.enqueueUrlDownloadJob({
+        tenantId,
+        entityId,
+        jobId: job.id,
+        documentId: resolvedDocId,
+        url,
+        portfolioUrl,
+        attempt: 1,
+      });
+
+      urlJobItems.push({
+        jobId: job.id,
+        documentId: resolvedDocId,
+        url,
+        status: 'PENDING',
+        stage: 'QUEUED_FOR_DOWNLOAD',
+      });
+    }
+
+    const statusUrl = `/v1/tenants/${tenantId}/entities/${entityId}/ingestion-jobs/${job.id}`;
+
+    return {
+      jobId: job.id,
+      entityId,
+      tenantId,
+      status: job.status,
+      totalUrls: sanitizedUrls.length,
+      urls: urlJobItems,
+      statusUrl,
+      createdAt: job.createdAt.toISOString(),
+    };
+  }
+
+  /**
+   * Process an S3 ObjectCreated event notification routed from Ingestion SQS queue.
+   */
+  async processS3ObjectCreated(objectKey: string): Promise<void> {
+    logger.info(`[IngestionWorker] Processing S3 ObjectCreated event for key: "${objectKey}"`);
+
+    // Look up document in database by objectKey
+    const document = await this.db.getDocumentByObjectKey(objectKey);
+    if (!document) {
+      logger.info(`[IngestionWorker] No document found for S3 key "${objectKey}". Skipping safely.`);
+      return;
+    }
+
+    const { tenantId, entityId, id: documentId } = document;
+
+    // Check if already processed (idempotency)
+    if (document.status === 'READY') {
+      logger.info(`[IngestionWorker] Document ${documentId} (${objectKey}) is already READY. Skipping duplicate S3 event.`);
+      return;
+    }
+
+    // Find the associated ingestion job document
+    const jobDoc = await this.db.getJobDocumentByDocumentId(documentId);
+    const jobId = jobDoc?.jobId || 's3-event-job';
+
+    if (jobDoc) {
+      await this.db.updateJobDocumentStage(tenantId, jobId, documentId, 'PROCESSING');
+    }
+
+    // Process document through RAG pipeline
+    await this.processSingleDocument(tenantId, entityId, jobId, documentId);
+
+    // If part of an ingestion job, verify if the overall job status can be updated to READY
+    if (jobDoc && jobDoc.jobId) {
+      const allDocs = await this.db.getJobDocuments(tenantId, jobDoc.jobId);
+      const readyDocs = allDocs.filter(d => d.status === 'READY');
+      const failedDocs = allDocs.filter(d => d.status === 'FAILED');
+
+      if (readyDocs.length + failedDocs.length === allDocs.length && allDocs.length > 0) {
+        const finalStatus = failedDocs.length === allDocs.length ? 'FAILED' : 'READY';
+        await this.db.updateJobStatus(tenantId, jobDoc.jobId, finalStatus, {
+          processed: readyDocs.length,
+          failed: failedDocs.length,
+        });
+        logger.info(`[IngestionWorker] Ingestion job ${jobDoc.jobId} updated to ${finalStatus}`);
+      }
+    }
   }
 
   /**
@@ -170,6 +345,15 @@ export class IngestionService {
     logger.info(`[DocPipeline] Step 1/6: Downloading file from storage (key: "${document.objectKey}")...`);
     const fileBuffer = await this.storage.downloadFile(document.objectKey);
     logger.info(`[DocPipeline] Step 1/6: File downloaded successfully (${fileBuffer.length} bytes).`);
+
+    // Ensure accurate sizeBytes in database if it was 0 or unrecorded
+    if ((!document.sizeBytes || Number(document.sizeBytes) === 0) && fileBuffer.length > 0) {
+      if (this.db.updateDocumentMetadata) {
+        await this.db.updateDocumentMetadata(tenantId, documentId, {
+          sizeBytes: fileBuffer.length,
+        });
+      }
+    }
 
     // 2. Extract text & structure
     logger.info(`[DocPipeline] Step 2/6: Extracting text from "${document.originalFilename}" (${document.mimeType})...`);
