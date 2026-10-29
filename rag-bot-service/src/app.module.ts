@@ -88,7 +88,7 @@ export class AppModule implements NestModule {
     const queue =
       deps?.queue ||
       (env.QUEUE_ADAPTER === 'sqs' && env.SQS_QUEUE_URL && !isTestEnv
-        ? new SqsQueueAdapter(env.SQS_QUEUE_URL, env.AWS_REGION)
+        ? new SqsQueueAdapter(env.SQS_QUEUE_URL, env.AWS_REGION, env.URL_DOWNLOAD_QUEUE_URL)
         : new LocalQueueAdapter(true));
 
     const isGoogleEndpoint =

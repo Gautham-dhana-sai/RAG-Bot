@@ -3,19 +3,24 @@ import path from 'path';
 import esbuild from 'esbuild';
 import archiver from 'archiver';
 
-async function packageLambda() {
-  console.log('[Lambda Packager] Compiling Lambda bundle with esbuild...');
+interface LambdaPackageTarget {
+  name: string;
+  entryPoint: string;
+  cjsOut: string;
+  distZip: string;
+  rootZip: string;
+  external?: string[];
+}
 
-  const distDir = path.resolve(process.cwd(), 'dist');
-  if (!fs.existsSync(distDir)) {
-    fs.mkdirSync(distDir, { recursive: true });
-  }
+async function bundleTarget(target: LambdaPackageTarget, distDir: string) {
+  console.log(`\n========================================================`);
+  console.log(`[Lambda Packager] Building "${target.name}" from ${target.entryPoint}`);
+  console.log(`========================================================`);
 
-  const outfile = path.join(distDir, 'lambda.cjs');
+  const outfile = path.join(distDir, target.cjsOut);
 
-  // Bundle into a single standalone CommonJS file for AWS Lambda Node.js runtime
   await esbuild.build({
-    entryPoints: [path.resolve(process.cwd(), 'src', 'lambda.ts')],
+    entryPoints: [target.entryPoint],
     bundle: true,
     platform: 'node',
     target: 'node20',
@@ -24,31 +29,26 @@ async function packageLambda() {
     sourcemap: true,
     minify: true,
     external: [
-      // Optional native and framework bindings
       'pg-native',
       '@nestjs/microservices',
       '@nestjs/websockets',
       'class-validator',
       'class-transformer',
+      ...(target.external || []),
     ],
   });
 
-  console.log(`[Lambda Packager] Successfully bundled lambda entry point to ${outfile}`);
-
-  const zipPath = path.join(distDir, 'lambda-bundle.zip');
-  const rootZipPath = path.resolve(process.cwd(), '..', 'ingestion-lambda.zip');
-
-  // Read bundled content into memory buffer to avoid concurrent file stream locks
   const bundleBuffer = fs.readFileSync(outfile);
+  const zipPath = path.join(distDir, target.distZip);
+  const rootZipPath = path.resolve(process.cwd(), '..', target.rootZip);
 
   await new Promise<void>((resolve, reject) => {
     const output = fs.createWriteStream(zipPath);
-    // Standard compression level 6 ensures compatibility with all zip extractors (Windows, Mac, Linux, AWS Lambda)
     const archive = archiver('zip', { zlib: { level: 6 } });
 
     output.on('close', () => {
       const sizeMb = (archive.pointer() / 1024 / 1024).toFixed(2);
-      console.log(`[Lambda Packager] Created deployment package: ${zipPath} (${sizeMb} MB)`);
+      console.log(`[Lambda Packager] Created package: ${zipPath} (${sizeMb} MB)`);
       resolve();
     });
 
@@ -57,37 +57,82 @@ async function packageLambda() {
 
     archive.pipe(output);
 
-    // Provide entry points as both index.js and lambda.js for flexible Lambda handler configuration
+    // Provide entry points as index.js, lambda.js, and <target.name>.js for flexible handlers
     archive.append(bundleBuffer, { name: 'index.js' });
     archive.append(bundleBuffer, { name: 'lambda.js' });
+    archive.append(bundleBuffer, { name: `${target.name}.js` });
 
-    // Include .env file so Lambda automatically loads environment configuration
+    // Include .env file for default configuration
     const envFile = path.resolve(process.cwd(), '.env');
     if (fs.existsSync(envFile)) {
       const envBuffer = fs.readFileSync(envFile);
       archive.append(envBuffer, { name: '.env' });
     }
 
-    // Include migration files for Lambda RDS initialization
-    const migrationFile = path.resolve(process.cwd(), 'migrations', '001_init.sql');
-    if (fs.existsSync(migrationFile)) {
-      const migrationBuffer = fs.readFileSync(migrationFile);
-      archive.append(migrationBuffer, { name: 'migrations/001_init.sql' });
+    // Include database migration SQL files
+    const migrationsDir = path.resolve(process.cwd(), 'migrations');
+    if (fs.existsSync(migrationsDir)) {
+      const sqlFiles = fs.readdirSync(migrationsDir).filter(f => f.endsWith('.sql'));
+      for (const sqlFile of sqlFiles) {
+        const fullPath = path.join(migrationsDir, sqlFile);
+        const migrationBuffer = fs.readFileSync(fullPath);
+        archive.append(migrationBuffer, { name: `migrations/${sqlFile}` });
+      }
     }
 
     archive.finalize();
   });
 
-  // Copy finalized zip to project root ingestion-lambda.zip
+  // Copy zip to monorepo root directory for convenient direct upload
   fs.copyFileSync(zipPath, rootZipPath);
-  console.log(`[Lambda Packager] Copied deployment package to root: ${rootZipPath}`);
+  console.log(`[Lambda Packager] Copied package to root: ${rootZipPath}`);
 }
 
-packageLambda()
-  .then(() => {
-    console.log('[Lambda Packager] Packaging finished successfully.');
-    process.exit(0);
-  })
+async function packageAll() {
+  const distDir = path.resolve(process.cwd(), 'dist');
+  if (!fs.existsSync(distDir)) {
+    fs.mkdirSync(distDir, { recursive: true });
+  }
+
+  const targets: LambdaPackageTarget[] = [
+    {
+      name: 'download-lambda',
+      entryPoint: path.resolve(process.cwd(), 'src', 'download-lambda.ts'),
+      cjsOut: 'download-lambda.cjs',
+      distZip: 'download-lambda.zip',
+      rootZip: 'download-lambda.zip',
+    },
+    {
+      name: 'ingestion-lambda',
+      entryPoint: path.resolve(process.cwd(), 'src', 'ingestion-lambda.ts'),
+      cjsOut: 'ingestion-lambda.cjs',
+      distZip: 'ingestion-lambda.zip',
+      rootZip: 'ingestion-lambda.zip',
+    },
+    {
+      name: 'api-lambda',
+      entryPoint: path.resolve(process.cwd(), 'src', 'lambda.ts'),
+      cjsOut: 'lambda.cjs',
+      distZip: 'lambda-bundle.zip',
+      rootZip: 'api-lambda.zip',
+    },
+  ];
+
+  // Check if a specific target argument was passed (e.g. "tsx scripts/package-lambda.ts download")
+  const filterArg = process.argv[2]?.toLowerCase();
+  const selectedTargets = filterArg
+    ? targets.filter(t => t.name.includes(filterArg))
+    : targets;
+
+  for (const target of selectedTargets) {
+    await bundleTarget(target, distDir);
+  }
+
+  console.log('\n[Lambda Packager] All packaging targets completed successfully.');
+}
+
+packageAll()
+  .then(() => process.exit(0))
   .catch(err => {
     console.error('[Lambda Packager] Packaging failed:', err);
     process.exit(1);

@@ -17,7 +17,10 @@ export interface IngestionJobDocument {
   jobId: string;
   documentId: string;
   status: 'PENDING' | 'PROCESSING' | 'READY' | 'FAILED';
+  sourceUrl?: string;
+  stage?: string;
   errorMessage?: string;
+  downloadMetadata?: Record<string, any>;
   createdAt: string;
   updatedAt: string;
   document?: {
@@ -27,6 +30,25 @@ export interface IngestionJobDocument {
     sizeBytes: number;
     isPublic: boolean;
   };
+}
+
+export interface UrlIngestionSubmitResponse {
+  jobId: string;
+  id?: string;
+  entityId: string;
+  tenantId: string;
+  status: string;
+  totalUrls: number;
+  urls: Array<{
+    jobId: string;
+    documentId?: string;
+    url: string;
+    status: string;
+    stage?: string;
+    errorMessage?: string;
+  }>;
+  statusUrl: string;
+  createdAt: string;
 }
 
 export interface IngestionSubmitResponse {

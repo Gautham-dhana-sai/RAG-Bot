@@ -30,16 +30,18 @@ Globals:
         S3_BUCKET_NAME: !Ref DocumentsBucket
         QUEUE_ADAPTER: sqs
         SQS_QUEUE_URL: !Ref IngestionQueue
+        URL_DOWNLOAD_QUEUE_URL: !Ref UrlDownloadQueue
         AI_PROVIDER: !Ref AiProvider
         OPENAI_API_KEY: !Ref OpenAIApiKey
         DATABASE_URL: !Sub 'postgresql://${DBUser}:${DBPassword}@${DBProxy.Endpoint}:5432/personarag'
 
 Resources:
   # -------------------------------------------------------------
-  # S3 Storage for Documents
+  # S3 Storage for Documents with Ingestion Event Notification
   # -------------------------------------------------------------
   DocumentsBucket:
     Type: AWS::S3::Bucket
+    DependsOn: IngestionQueuePolicy
     Properties:
       BucketName: !Sub 'personarag-docs-${Environment}-${AWS::AccountId}'
       BucketEncryption:
@@ -51,6 +53,10 @@ Resources:
         BlockPublicPolicy: true
         IgnorePublicAcls: true
         RestrictPublicBuckets: true
+      NotificationConfiguration:
+        QueueConfigurations:
+          - Event: 's3:ObjectCreated:*'
+            Queue: !GetAtt IngestionQueue.Arn
 
   # -------------------------------------------------------------
   # SQS Queue with Dead-Letter Queue for Ingestion
@@ -68,6 +74,42 @@ Resources:
       VisibilityTimeout: 180
       RedrivePolicy:
         deadLetterTargetArn: !GetAtt IngestionDeadLetterQueue.Arn
+        maxReceiveCount: 3
+
+  # Resource Policy allowing S3 to send ObjectCreated notifications to IngestionQueue
+  IngestionQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref IngestionQueue
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: s3.amazonaws.com
+            Action: sqs:SendMessage
+            Resource: !GetAtt IngestionQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !Sub 'arn:aws:s3:::personarag-docs-${Environment}-${AWS::AccountId}'
+
+  # -------------------------------------------------------------
+  # SQS Queue with Dead-Letter Queue for URL Download Worker
+  # -------------------------------------------------------------
+  UrlDownloadDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub 'personarag-url-download-dlq-${Environment}'
+      MessageRetentionPeriod: 1209600 # 14 days
+
+  UrlDownloadQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub 'personarag-url-download-queue-${Environment}'
+      VisibilityTimeout: 180
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt UrlDownloadDeadLetterQueue.Arn
         maxReceiveCount: 3
 
   # -------------------------------------------------------------
@@ -104,6 +146,8 @@ Resources:
             BucketName: !Ref DocumentsBucket
         - SQSSendMessagePolicy:
             QueueName: !GetAtt IngestionQueue.QueueName
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt UrlDownloadQueue.QueueName
       Events:
         ProxyApi:
           Type: HttpApi
@@ -113,13 +157,37 @@ Resources:
             Method: ANY
 
   # -------------------------------------------------------------
+  # Dedicated URL Download Worker Lambda Function
+  # -------------------------------------------------------------
+  UrlDownloadWorkerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: dist/download-lambda.zip
+      Handler: index.handler
+      Timeout: 120
+      MemorySize: 1024
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref DocumentsBucket
+        - SQSPollerPolicy:
+            QueueName: !GetAtt UrlDownloadQueue.QueueName
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt IngestionQueue.QueueName
+      Events:
+        UrlDownloadTrigger:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt UrlDownloadQueue.Arn
+            BatchSize: 5
+
+  # -------------------------------------------------------------
   # Ingestion SQS Worker Lambda Function
   # -------------------------------------------------------------
   IngestionWorkerFunction:
     Type: AWS::Serverless::Function
     Properties:
-      CodeUri: dist/lambda-bundle.zip
-      Handler: lambda.sqsIngestionHandler
+      CodeUri: dist/ingestion-lambda.zip
+      Handler: index.handler
       Timeout: 120
       MemorySize: 2048
       Policies:
@@ -144,4 +212,7 @@ Outputs:
   IngestionQueueUrl:
     Description: SQS Ingestion Queue URL
     Value: !Ref IngestionQueue
+  UrlDownloadQueueUrl:
+    Description: SQS URL Download Queue URL
+    Value: !Ref UrlDownloadQueue
 

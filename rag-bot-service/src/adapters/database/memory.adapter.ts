@@ -263,6 +263,15 @@ export class MemoryDatabaseAdapter implements IDatabaseAdapter {
     return null;
   }
 
+  async getDocumentByObjectKey(objectKey: string): Promise<Document | null> {
+    for (const doc of this.documents.values()) {
+      if (doc.objectKey === objectKey) {
+        return doc;
+      }
+    }
+    return null;
+  }
+
   async getDocumentsByEntity(tenantId: string, entityId: string): Promise<Document[]> {
     return Array.from(this.documents.values()).filter(
       doc => doc.tenantId === tenantId && doc.entityId === entityId
@@ -318,6 +327,32 @@ export class MemoryDatabaseAdapter implements IDatabaseAdapter {
     }
   }
 
+  async updateDocumentMetadata(
+    tenantId: string,
+    documentId: string,
+    data: {
+      originalFilename?: string;
+      mimeType?: string;
+      sizeBytes?: number;
+      contentHash?: string;
+      objectKey?: string;
+      status?: Document['status'];
+      errorMessage?: string;
+    }
+  ): Promise<void> {
+    const doc = this.documents.get(documentId);
+    if (doc && doc.tenantId === tenantId) {
+      if (data.originalFilename !== undefined) doc.originalFilename = data.originalFilename;
+      if (data.mimeType !== undefined) doc.mimeType = data.mimeType;
+      if (data.sizeBytes !== undefined) doc.sizeBytes = data.sizeBytes;
+      if (data.contentHash !== undefined) doc.contentHash = data.contentHash;
+      if (data.objectKey !== undefined) doc.objectKey = data.objectKey;
+      if (data.status !== undefined) doc.status = data.status;
+      if (data.errorMessage !== undefined) doc.errorMessage = data.errorMessage;
+      doc.updatedAt = new Date();
+    }
+  }
+
   async deleteDocument(tenantId: string, entityId: string, documentId: string): Promise<boolean> {
     const doc = this.documents.get(documentId);
     if (!doc || doc.tenantId !== tenantId || doc.entityId !== entityId) return false;
@@ -360,16 +395,18 @@ export class MemoryDatabaseAdapter implements IDatabaseAdapter {
     return job;
   }
 
-  async createIngestionJob(data: { id?: string; tenantId: string; entityId: string; totalDocuments: number }): Promise<IngestionJob> {
+  async createIngestionJob(data: { id?: string; tenantId: string; entityId: string; totalDocuments: number; sourceType?: string; metadata?: Record<string, any> }): Promise<IngestionJob> {
     const job: IngestionJob = {
       id: data.id || generateUuid(),
       tenantId: data.tenantId,
       entityId: data.entityId,
       status: 'PENDING',
+      sourceType: (data.sourceType as any) || 'DIRECT_UPLOAD',
       totalDocuments: data.totalDocuments,
       processedDocuments: 0,
       failedDocuments: 0,
       retryCount: 0,
+      metadata: data.metadata || {},
       createdAt: new Date(),
       updatedAt: new Date(),
     };
@@ -388,13 +425,16 @@ export class MemoryDatabaseAdapter implements IDatabaseAdapter {
     }
   }
 
-  async createJobDocument(tenantId: string, jobId: string, documentId: string): Promise<IngestionJobDocument> {
+  async createJobDocument(tenantId: string, jobId: string, documentId: string, extra?: { sourceUrl?: string; stage?: string; downloadMetadata?: Record<string, any> }): Promise<IngestionJobDocument> {
     const jobDoc: IngestionJobDocument = {
       id: generateUuid(),
       tenantId,
       jobId,
       documentId,
       status: 'PENDING',
+      sourceUrl: extra?.sourceUrl,
+      stage: (extra?.stage as any) || 'PENDING',
+      downloadMetadata: extra?.downloadMetadata || {},
       createdAt: new Date(),
       updatedAt: new Date(),
     };
@@ -410,6 +450,26 @@ export class MemoryDatabaseAdapter implements IDatabaseAdapter {
         jd.updatedAt = new Date();
       }
     }
+  }
+
+  async updateJobDocumentStage(tenantId: string, jobId: string, documentId: string, stage: string, errorMessage?: string, downloadMetadata?: Record<string, any>): Promise<void> {
+    for (const jd of this.jobDocuments.values()) {
+      if (jd.tenantId === tenantId && jd.jobId === jobId && jd.documentId === documentId) {
+        jd.stage = stage as any;
+        if (errorMessage !== undefined) jd.errorMessage = errorMessage;
+        if (downloadMetadata) jd.downloadMetadata = { ...jd.downloadMetadata, ...downloadMetadata };
+        jd.updatedAt = new Date();
+      }
+    }
+  }
+
+  async getJobDocumentByDocumentId(documentId: string): Promise<IngestionJobDocument | null> {
+    for (const jd of this.jobDocuments.values()) {
+      if (jd.documentId === documentId) {
+        return jd;
+      }
+    }
+    return null;
   }
 
   async getJobDocuments(tenantId: string, jobId: string): Promise<(IngestionJobDocument & { document?: Document })[]> {

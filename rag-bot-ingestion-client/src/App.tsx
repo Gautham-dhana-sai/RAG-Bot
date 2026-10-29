@@ -54,6 +54,43 @@ export function capitalizeName(str: string): string {
     .join(' ');
 }
 
+/**
+ * Cleanly truncate long filenames and query parameters, preserving extension.
+ */
+export function formatDisplayName(filename: string, maxLen = 28): string {
+  if (!filename) return 'Document';
+  // Strip URL query parameters or hashes
+  let clean = filename.split('?')[0].split('#')[0];
+  // Strip path segments
+  clean = clean.split('/').pop()?.split('\\').pop() || clean;
+  if (clean.length <= maxLen) return clean;
+
+  const extIndex = clean.lastIndexOf('.');
+  if (extIndex > 0 && extIndex > clean.length - 8) {
+    const ext = clean.substring(extIndex);
+    const base = clean.substring(0, extIndex);
+    const keepStart = maxLen - ext.length - 4;
+    return `${base.substring(0, Math.max(keepStart, 6))}...${base.substring(base.length - 4)}${ext}`;
+  }
+  return `${clean.substring(0, maxLen - 3)}...`;
+}
+
+/**
+ * Format file size with support for pending/processing download states.
+ */
+export function formatFileSize(bytes?: number | null, status?: string): string {
+  const num = Number(bytes);
+  if (!bytes || isNaN(num) || num <= 0) {
+    if (status === 'DOWNLOADING' || status === 'PENDING' || status === 'PROCESSING') {
+      return 'Processing...';
+    }
+    return '0 KB';
+  }
+  if (num < 1024) return `${num} B`;
+  if (num < 1024 * 1024) return `${(num / 1024).toFixed(1)} KB`;
+  return `${(num / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 export function App() {
   // Configuration
   const [apiUrl, setApiUrl] = useState(() => import.meta.env.VITE_API_URL || 'http://localhost:3000');
@@ -85,6 +122,10 @@ export function App() {
   const [addPortalError, setAddPortalError] = useState<string | null>(null);
 
   // Portal Ingestion & Documents state
+  const [ingestionMode, setIngestionMode] = useState<'files' | 'urls'>('files');
+  const [urlInputs, setUrlInputs] = useState<string[]>(['']);
+  const [isSubmittingUrls, setIsSubmittingUrls] = useState(false);
+  const [urlError, setUrlError] = useState<string | null>(null);
   const [selectedFiles, setSelectedFiles] = useState<FileItem[]>([]);
   const [isSubmittingFiles, setIsSubmittingFiles] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
@@ -128,6 +169,7 @@ export function App() {
   const [showSettings, setShowSettings] = useState(false);
 
   const pollingTimerRef = useRef<any>(null);
+  const prevJobSnapshotRef = useRef<string>('');
 
   const getClient = useCallback(() => {
     return new IngestionApiClient(apiUrl, authToken);
@@ -274,10 +316,10 @@ export function App() {
   );
 
   useEffect(() => {
-    if (selectedPortal) {
+    if (selectedPortal?.id) {
       loadPortalDocuments(selectedPortal.id);
     }
-  }, [selectedPortal, loadPortalDocuments]);
+  }, [selectedPortal?.id, loadPortalDocuments]);
 
   // Handle Auth submission (login or signup)
   const handleAuthSubmit = async (e: React.FormEvent) => {
@@ -402,6 +444,7 @@ export function App() {
     (portalRef: string, jobId: string) => {
       setIsPollingJob(true);
       if (pollingTimerRef.current) clearInterval(pollingTimerRef.current);
+      prevJobSnapshotRef.current = '';
 
       const poll = async () => {
         try {
@@ -413,10 +456,20 @@ export function App() {
             setJobDocuments(job.documents);
           }
 
+          // Build a fingerprint of overall status and document stages
+          const docFingerprint = (job.documents || []).map(d => `${d.id}:${d.stage || ''}:${d.status}`).join(';');
+          const currentSnapshot = `${job.status}|${job.processedDocuments}|${job.failedDocuments}|${docFingerprint}`;
+
+          // Only fetch portal documents if there is a real status or stage change
+          if (prevJobSnapshotRef.current && prevJobSnapshotRef.current !== currentSnapshot) {
+            loadPortalDocuments(portalRef);
+          }
+          prevJobSnapshotRef.current = currentSnapshot;
+
           if (job.status === 'READY' || job.status === 'FAILED') {
             setIsPollingJob(false);
             if (pollingTimerRef.current) clearInterval(pollingTimerRef.current);
-            // Refresh documents and portal counts
+            // Refresh documents and portal counts upon completion
             loadPortalDocuments(portalRef);
             loadPortals();
           }
@@ -427,7 +480,7 @@ export function App() {
       };
 
       poll();
-      pollingTimerRef.current = setInterval(poll, 1500);
+      pollingTimerRef.current = setInterval(poll, 2000);
     },
     [getClient, loadPortalDocuments, loadPortals]
   );
@@ -455,10 +508,68 @@ export function App() {
         startJobPolling(selectedPortal.id, jobId);
       }
       setSelectedFiles([]);
+      loadPortalDocuments(selectedPortal.id);
     } catch (err: any) {
       setUploadError(err.message || 'File upload failed. Please try again.');
     } finally {
       setIsSubmittingFiles(false);
+    }
+  };
+
+  const handleAddUrlRow = () => {
+    setUrlInputs(prev => [...prev, '']);
+  };
+
+  const handleRemoveUrlRow = (idx: number) => {
+    setUrlInputs(prev => (prev.length > 1 ? prev.filter((_, i) => i !== idx) : ['']));
+  };
+
+  const handleUrlChange = (idx: number, val: string) => {
+    setUrlInputs(prev => {
+      const copy = [...prev];
+      copy[idx] = val;
+      return copy;
+    });
+  };
+
+  const handleSubmitUrls = async () => {
+    if (!selectedPortal) return;
+    const cleanUrls = urlInputs.map(u => u.trim()).filter(Boolean);
+    if (cleanUrls.length === 0) {
+      setUrlError('Please enter at least one valid HTTP or HTTPS document/photo URL.');
+      return;
+    }
+
+    setIsSubmittingUrls(true);
+    setUrlError(null);
+
+    try {
+      const client = getClient();
+      const res = await client.submitPortalUrls(selectedPortal.id, cleanUrls);
+      const jobId = res.jobId || res.id;
+      if (jobId) {
+        startJobPolling(selectedPortal.id, jobId);
+      }
+      setUrlInputs(['']);
+      loadPortalDocuments(selectedPortal.id);
+    } catch (err: any) {
+      setUrlError(err.message || 'Failed to submit URLs. Please try again.');
+    } finally {
+      setIsSubmittingUrls(false);
+    }
+  };
+
+  const handleRetryUrl = async (failedUrl: string) => {
+    if (!selectedPortal) return;
+    try {
+      const client = getClient();
+      const res = await client.submitPortalUrls(selectedPortal.id, [failedUrl]);
+      const jobId = res.jobId || res.id;
+      if (jobId) {
+        startJobPolling(selectedPortal.id, jobId);
+      }
+    } catch (err: any) {
+      setUrlError(`Retry failed: ${err.message}`);
     }
   };
 
@@ -843,7 +954,10 @@ export function App() {
                             <button
                               type="button"
                               className="btn-primary btn-sm"
-                              onClick={() => setSelectedPortal(p)}
+                              onClick={() => {
+                                setSelectedPortal(p);
+                                loadPortalDocuments(p.id);
+                              }}
                             >
                               Open Workspace →
                             </button>
@@ -927,33 +1041,113 @@ export function App() {
               {/* Left Column: Upload & Live Ingestion */}
               <div className="workspace-col-main">
                 <div className="card">
-                  <h3>Submit Documents for Ingestion</h3>
-                  <p className="form-hint">
-                    Upload technical specifications, documentation, whitepapers, manuals, or project files. Extracted text will be automatically indexed into pgvector for high-accuracy grounded retrieval.
-                  </p>
-
-                  <FileDropZone
-                    files={selectedFiles}
-                    onFilesSelected={setSelectedFiles}
-                    disabled={isSubmittingFiles}
-                  />
-
-                  {uploadError && (
-                    <div className="alert alert-error">
-                      ✕ {uploadError}
-                    </div>
-                  )}
-
-                  <div className="submit-action-bar">
+                  <div className="ingestion-tabs-header">
                     <button
                       type="button"
-                      className="btn-primary btn-lg"
-                      onClick={handleSubmitFiles}
-                      disabled={selectedFiles.length === 0 || isSubmittingFiles}
+                      className={`tab-btn ${ingestionMode === 'files' ? 'active' : ''}`}
+                      onClick={() => setIngestionMode('files')}
                     >
-                      {isSubmittingFiles ? 'Submitting Files...' : `Ingest ${selectedFiles.length} Document(s)`}
+                      📁 Direct File Upload
+                    </button>
+                    <button
+                      type="button"
+                      className={`tab-btn ${ingestionMode === 'urls' ? 'active' : ''}`}
+                      onClick={() => setIngestionMode('urls')}
+                    >
+                      🔗 Import from URLs & Photos
                     </button>
                   </div>
+
+                  {ingestionMode === 'files' ? (
+                    <>
+                      <p className="form-hint">
+                        Upload technical specifications, documentation, whitepapers, manuals, or project files. Extracted text will be automatically indexed into pgvector for high-accuracy grounded retrieval.
+                      </p>
+
+                      <FileDropZone
+                        files={selectedFiles}
+                        onFilesSelected={setSelectedFiles}
+                        disabled={isSubmittingFiles}
+                      />
+
+                      {uploadError && (
+                        <div className="alert alert-error">
+                          ✕ {uploadError}
+                        </div>
+                      )}
+
+                      <div className="submit-action-bar">
+                        <button
+                          type="button"
+                          className="btn-primary btn-lg"
+                          onClick={handleSubmitFiles}
+                          disabled={selectedFiles.length === 0 || isSubmittingFiles}
+                        >
+                          {isSubmittingFiles ? 'Submitting Files...' : `Ingest ${selectedFiles.length} Document(s)`}
+                        </button>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="url-import-container">
+                      <p className="form-hint">
+                        Enter public URLs to PDF documents, Word documents, or photos (PNG, JPEG, WebP). URLs are securely validated against SSRF and queued for download via a dedicated worker before converging into the RAG pipeline.
+                      </p>
+
+                      <div className="url-inputs-list">
+                        {urlInputs.map((url, idx) => (
+                          <div key={idx} className="url-input-row">
+                            <input
+                              type="url"
+                              className="qa-input"
+                              placeholder="https://example.com/document.pdf or photo.png"
+                              value={url}
+                              onChange={e => handleUrlChange(idx, e.target.value)}
+                              disabled={isSubmittingUrls}
+                            />
+                            {urlInputs.length > 1 && (
+                              <button
+                                type="button"
+                                className="btn-card-delete-icon"
+                                title="Remove URL"
+                                onClick={() => handleRemoveUrlRow(idx)}
+                                disabled={isSubmittingUrls}
+                              >
+                                ✕
+                              </button>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+
+                      <div className="url-actions-row">
+                        <button
+                          type="button"
+                          className="btn-secondary btn-sm"
+                          onClick={handleAddUrlRow}
+                          disabled={isSubmittingUrls || urlInputs.length >= 20}
+                        >
+                          + Add Another URL
+                        </button>
+                      </div>
+
+                      {urlError && (
+                        <div className="alert alert-error" style={{ marginTop: '1rem' }}>
+                          ✕ {urlError}
+                        </div>
+                      )}
+
+                      <div className="submit-action-bar">
+                        <button
+                          type="button"
+                          className="btn-primary btn-lg"
+                          onClick={handleSubmitUrls}
+                          disabled={isSubmittingUrls || urlInputs.every(u => !u.trim())}
+                        >
+                          {isSubmittingUrls ? 'Submitting URLs...' : `Import & Ingest ${urlInputs.filter(u => u.trim()).length || ''} URL(s)`}
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 {/* Job Tracking Card */}
@@ -967,7 +1161,12 @@ export function App() {
                 )}
 
                 {/* Ingestion Job Document Breakdown */}
-                {jobDocuments.length > 0 && <DocumentList documents={jobDocuments} />}
+                {jobDocuments.length > 0 && (
+                  <DocumentList
+                    documents={jobDocuments}
+                    onRetryUrl={handleRetryUrl}
+                  />
+                )}
 
                 {/* Quick Verification Q&A widget */}
                 <div className="card qa-verification-card">
@@ -1195,9 +1394,11 @@ export function App() {
                       {portalDocuments.map(doc => (
                         <li key={doc.id} className="side-doc-item">
                           <div className="side-doc-info">
-                            <span className="side-doc-name">{doc.originalFilename}</span>
+                            <span className="side-doc-name" title={doc.originalFilename}>
+                              {formatDisplayName(doc.originalFilename, 26)}
+                            </span>
                             <span className="side-doc-meta">
-                              {(doc.sizeBytes / 1024).toFixed(1)} KB • {new Date(doc.createdAt).toLocaleDateString()}
+                              {formatFileSize(doc.sizeBytes, doc.status)} • {new Date(doc.createdAt).toLocaleDateString()}
                             </span>
                           </div>
                           <span className={`status-pill status-${doc.status.toLowerCase()}`}>
