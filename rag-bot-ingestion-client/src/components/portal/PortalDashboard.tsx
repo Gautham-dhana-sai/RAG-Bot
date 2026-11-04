@@ -19,6 +19,7 @@ export const PortalDashboard: React.FC = memo(() => {
     selectedPortal,
     setSelectedPortal,
     portalDocuments,
+    portalCrawls,
     isLoadingPortals,
     isLoadingDocuments,
     loadPortalDocuments,
@@ -207,6 +208,8 @@ export const PortalDashboard: React.FC = memo(() => {
             {jobDocuments.length > 0 && (
               <DocumentList
                 documents={jobDocuments}
+                job={currentJob}
+                crawls={portalCrawls}
                 onRetryUrl={handleRetryUrl}
               />
             )}

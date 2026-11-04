@@ -7,6 +7,7 @@ export interface IngestionJob {
   processedDocuments: number;
   failedDocuments: number;
   errorSummary?: string;
+  sourceType?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -19,6 +20,7 @@ export interface IngestionJobDocument {
   status: 'PENDING' | 'PROCESSING' | 'READY' | 'FAILED';
   sourceUrl?: string;
   stage?: string;
+  sourceType?: string;
   errorMessage?: string;
   downloadMetadata?: Record<string, any>;
   createdAt: string;
@@ -94,6 +96,9 @@ export interface DocumentInfo {
   sizeBytes: number;
   status: 'PENDING' | 'PROCESSING' | 'READY' | 'FAILED';
   errorMessage?: string;
+  sourceUrl?: string;
+  stage?: string;
+  sourceType?: string;
   createdAt: string;
   updatedAt?: string;
 }
@@ -123,3 +128,85 @@ export interface QAHistoryItem {
   timestamp: string;
   isError?: boolean;
 }
+
+export type CrawlStatus =
+  | 'queued'
+  | 'discovering'
+  | 'processing_pages'
+  | 'completed'
+  | 'completed_with_errors'
+  | 'failed'
+  | 'cancelled';
+
+export type CrawlPageStatus =
+  | 'discovered'
+  | 'queued'
+  | 'fetching'
+  | 'extracting'
+  | 'uploaded'
+  | 'ingesting'
+  | 'completed'
+  | 'skipped'
+  | 'failed';
+
+export interface CrawlConfig {
+  maxPages?: number;
+  maxDepth?: number;
+  respectRobots?: boolean;
+  rateLimitMs?: number;
+  allowedOrigins?: string[];
+  customExclusions?: string[];
+}
+
+export interface CrawlPage {
+  id: string;
+  tenantId: string;
+  entityId: string;
+  crawlJobId: string;
+  documentId?: string;
+  originalUrl: string;
+  normalizedUrl: string;
+  canonicalUrl?: string;
+  title?: string;
+  contentHash?: string;
+  objectKey?: string;
+  status: CrawlPageStatus;
+  stage?: string;
+  depth: number;
+  retryCount?: number;
+  sizeBytes?: number;
+  errorMessage?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CrawlJob {
+  id: string;
+  tenantId: string;
+  entityId: string;
+  rootUrl: string;
+  status: CrawlStatus;
+  config?: CrawlConfig;
+  discoveredCount: number;
+  queuedCount: number;
+  processingCount: number;
+  completedCount: number;
+  failedCount: number;
+  skippedCount: number;
+  errorSummary?: string;
+  pages?: CrawlPage[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface StartCrawlResponse {
+  crawlJobId: string;
+  jobId: string;
+  entityId: string;
+  tenantId: string;
+  status: CrawlStatus;
+  rootUrl: string;
+  statusUrl: string;
+  createdAt: string;
+}
+

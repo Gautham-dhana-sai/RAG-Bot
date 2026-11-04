@@ -18,62 +18,145 @@ export function cleanDocCitationTags(text: string): string {
     // 3. Remove any lingering bare DOC-uuid or CHUNK-uuid tags
     .replace(/\bDOC-[a-zA-Z0-9_-]+/gi, '')
     .replace(/\bCHUNK-[a-zA-Z0-9_-]+/gi, '')
-    // 4. Remove empty or trailing brackets
+    // 4. Remove empty brackets
     .replace(/\[\s*\]/g, '')
     .replace(/\(\s*\)/g, '')
     .replace(/\[\s*$/g, '')
     .replace(/\(\s*$/g, '')
     .replace(/[ \t]+([.,!?;:])/g, '$1')
     .replace(/[^\S\r\n]{2,}/g, ' ')
-    // Ensure every bullet point starts on its own brand-new line
-    .replace(/([^\n])\s*([•*]|\s-\s)\s*/g, '$1\n• ')
-    .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
 
 /**
- * Renders text with markdown bolding (**text**) and bullet point styling
- * so that answers look visually polished, literate, and bullet points always start on a new line.
+ * Formats inline Markdown elements: **bold**, *italic*, `code`.
  */
+export function formatInlineMarkdown(text: string): React.ReactNode {
+  if (!text) return null;
+
+  // Split tokens for `code`, **bold**, and *italic*
+  const tokenRegex = /(`[^`]+`|\*\*[^*]+\*\*|__[^_]+__|(?<!\*)\*[^*]+\*(?!\*)|(?<!_)_[^_]+_(?!_))/g;
+  const parts = text.split(tokenRegex);
+
+  return parts.map((part, idx) => {
+    if (!part) return null;
+    if (part.startsWith('`') && part.endsWith('`') && part.length >= 2) {
+      return (
+        <code key={idx} className="qa-inline-code">
+          {part.slice(1, -1)}
+        </code>
+      );
+    }
+    if (
+      (part.startsWith('**') && part.endsWith('**') && part.length >= 4) ||
+      (part.startsWith('__') && part.endsWith('__') && part.length >= 4)
+    ) {
+      return <strong key={idx}>{part.slice(2, -2)}</strong>;
+    }
+    if (
+      (part.startsWith('*') && part.endsWith('*') && part.length >= 2) ||
+      (part.startsWith('_') && part.endsWith('_') && part.length >= 2)
+    ) {
+      return <em key={idx}>{part.slice(1, -1)}</em>;
+    }
+    return part;
+  });
+}
+
+/**
+ * Formats Markdown answer text cleanly into friendly, readable elements:
+ * - Headings (#, ##, ###)
+ * - Clean bullet lists (-, *, •) without empty bullets
+ * - Numbered lists (1., 2.)
+ * - Horizontal rules (---, ***, --)
+ * - Formatted paragraphs with bold, italic, and code highlighting
+ */
+export function formatAnswerText(text: string): React.ReactNode {
+  if (!text) return null;
+
+  const rawLines = text.replace(/\r\n/g, '\n').split('\n');
+  const elements: React.ReactNode[] = [];
+  let currentListItems: React.ReactNode[] = [];
+
+  const flushList = () => {
+    if (currentListItems.length > 0) {
+      elements.push(
+        <div key={`list-${elements.length}`} className="qa-bullet-list">
+          {currentListItems}
+        </div>
+      );
+      currentListItems = [];
+    }
+  };
+
+  for (let i = 0; i < rawLines.length; i++) {
+    const rawLine = rawLines[i];
+    const trimmed = rawLine.trim();
+
+    // 1. Skip completely empty lines or stray lone symbols
+    if (!trimmed || trimmed === '*' || trimmed === '•' || trimmed === '-' || trimmed === '+') {
+      flushList();
+      continue;
+    }
+
+    // 2. Horizontal divider: ---, ***, ___, --
+    if (/^(\-{2,}|\*{3,}|_{3,})$/.test(trimmed)) {
+      flushList();
+      elements.push(<hr key={`divider-${elements.length}`} className="qa-divider" />);
+      continue;
+    }
+
+    // 3. Headings: #, ##, ###
+    const headingMatch = trimmed.match(/^(#{1,6})\s+(.*)$/);
+    if (headingMatch) {
+      flushList();
+      const level = headingMatch[1].length;
+      const content = headingMatch[2].trim();
+      const HeadingTag = (level === 1 ? 'h3' : level === 2 ? 'h4' : 'h5') as keyof JSX.IntrinsicElements;
+      const className = `qa-heading qa-heading-${level}`;
+      elements.push(
+        <HeadingTag key={`heading-${elements.length}`} className={className}>
+          {formatInlineMarkdown(content)}
+        </HeadingTag>
+      );
+      continue;
+    }
+
+    // 4. Bullet list items: - Item, * Item, • Item, + Item, 1. Item
+    const bulletMatch = trimmed.match(/^([•\-\*+]|\d+\.)\s+(.*)$/);
+    if (bulletMatch) {
+      const marker = bulletMatch[1];
+      const content = bulletMatch[2].trim();
+      // If content is empty or just lone asterisks, skip it
+      if (!content || content === '*' || content === '•') {
+        continue;
+      }
+
+      const isNumbered = /^\d+\.$/.test(marker);
+      currentListItems.push(
+        <div key={`bullet-${i}`} className="qa-bullet-item">
+          <span className="qa-bullet-dot">{isNumbered ? marker : '•'}</span>
+          <div className="qa-bullet-content">{formatInlineMarkdown(content)}</div>
+        </div>
+      );
+      continue;
+    }
+
+    // 5. Normal text paragraph
+    flushList();
+    elements.push(
+      <p key={`p-${elements.length}`} className="qa-text-paragraph">
+        {formatInlineMarkdown(trimmed)}
+      </p>
+    );
+  }
+
+  flushList();
+  return <>{elements}</>;
+}
+
 export function formatAnswerParagraph(text: string): React.ReactNode {
-  // Ensure every bullet point starts on its own brand-new line
-  const normalizedText = text
-    .replace(/([^\n])\s*([•*]|\s-\s)\s*/g, '$1\n• ')
-    .replace(/\r\n/g, '\n');
-
-  const lines = normalizedText.split('\n').map(l => l.trim()).filter(Boolean);
-  return (
-    <>
-      {lines.map((line, lIdx) => {
-        const isBullet = /^([•\-*]|\d+\.)\s*/.test(line);
-        const cleanLine = line.replace(/^([•\-*]|\d+\.)\s*/, '');
-
-        // Parse **bold** fragments
-        const parts = cleanLine.split(/(\*\*[^*]+\*\*)/g);
-        const formattedLine = parts.map((part, pIdx) => {
-          if (part.startsWith('**') && part.endsWith('**')) {
-            return <strong key={pIdx}>{part.slice(2, -2)}</strong>;
-          }
-          return part;
-        });
-
-        if (isBullet) {
-          return (
-            <div key={lIdx} className="qa-bullet-item">
-              <span className="qa-bullet-dot">•</span>
-              <span className="qa-bullet-content">{formattedLine}</span>
-            </div>
-          );
-        }
-
-        return (
-          <div key={lIdx} className="qa-text-line">
-            {formattedLine}
-          </div>
-        );
-      })}
-    </>
-  );
+  return formatAnswerText(text);
 }
 
 export function capitalizeName(str: string): string {

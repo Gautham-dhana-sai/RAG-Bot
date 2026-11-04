@@ -192,7 +192,7 @@ export const PortalsDashboardView: React.FC = memo(() => {
                   <div className="portal-card-header portfolio-card-header">
                     <h4>{p.name}</h4>
                     <span className="doc-count-badge">
-                      📄 {p.documentCount} {p.documentCount === 1 ? 'doc' : 'docs'}
+                      📚 {p.documentCount} {p.documentCount === 1 ? 'source' : 'sources'}
                     </span>
                   </div>
 

@@ -17,11 +17,16 @@ export const REJECTED_WEB_EXTENSIONS = new Set([
  * explicitly rejecting HTML webpages and non-file endpoints.
  */
 export function validateFileOrPhotoUrlClient(rawUrl: string): { isValid: boolean; reason?: string } {
+  const trimmed = rawUrl.trim();
+  if (!trimmed) {
+    return { isValid: false, reason: 'Please enter a valid document or photo URL.' };
+  }
+
   let parsed: URL;
   try {
-    parsed = new URL(rawUrl.trim());
+    parsed = new URL(trimmed);
   } catch (err: any) {
-    return { isValid: false, reason: `Invalid URL format: "${rawUrl}". Please enter a valid HTTP or HTTPS URL.` };
+    return { isValid: false, reason: 'Invalid URL format. Please enter a valid HTTP or HTTPS URL.' };
   }
 
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
@@ -35,7 +40,7 @@ export function validateFileOrPhotoUrlClient(rawUrl: string): { isValid: boolean
     if (pathname.endsWith(`.${ext}`)) {
       return {
         isValid: false,
-        reason: `HTML webpages (.${ext}) cannot be imported. Please provide direct links to files (.pdf, .docx, .txt) or photos (.png, .jpg, .webp).`,
+        reason: `HTML webpages (.${ext}) cannot be imported here. To crawl or ingest web pages, please use the Websites tab, or provide a direct link to a file (.pdf, .docx, .txt) or photo (.png, .jpg, .webp).`,
       };
     }
   }
@@ -67,13 +72,13 @@ export function validateFileOrPhotoUrlClient(rawUrl: string): { isValid: boolean
   if (pathname === '/' || pathname === '' || dotIndex === -1) {
     return {
       isValid: false,
-      reason: `URL "${rawUrl}" does not point to a supported file or photo. Please provide a direct link to a PDF, DOCX, TXT, PNG, JPG, or WebP file (e.g. https://example.com/document.pdf). Webpage crawling is not supported.`,
+      reason: `URL does not point to a supported file or photo. Please provide a direct link to a PDF, DOCX, TXT, PNG, JPG, or WebP file (e.g. https://example.com/document.pdf). To crawl or ingest web pages, please use the Websites tab.`,
     };
   }
 
   return {
     isValid: false,
-    reason: `Unsupported file extension in URL "${rawUrl}". Supported formats are PDF, DOCX, TXT, PNG, JPEG, and WebP.`,
+    reason: `Unsupported file extension in URL "${rawUrl}". Supported formats are PDF, DOCX, TXT, PNG, JPEG, and WebP. To crawl or ingest web pages, please use the Websites tab.`,
   };
 }
 

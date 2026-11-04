@@ -172,6 +172,39 @@ export class PortfoliosController {
     );
   }
 
+  @Post([':portfolioReference/websites', ':portfolioReference/ingestion-websites'])
+  @HttpCode(HttpStatus.ACCEPTED)
+  @ApiOperation({ summary: 'Submit public website URLs for static HTML extraction and vector ingestion into a portfolio' })
+  async submitWebsites(
+    @Req() req: Request,
+    @Param('portfolioReference') portfolioReference: string,
+    @Body() body: any
+  ) {
+    const rawUrls = Array.isArray(body)
+      ? body
+      : Array.isArray(body?.urls)
+        ? body.urls
+        : body?.url
+          ? [body.url]
+          : [];
+
+    if (!Array.isArray(rawUrls) || rawUrls.length === 0) {
+      throw new BadRequestError('Request must include a valid "url" string or non-empty "urls" array.');
+    }
+
+    const schema = z.array(z.string().url('Each item must be a valid HTTP/HTTPS URL'));
+    const parsed = schema.safeParse(rawUrls);
+    if (!parsed.success) {
+      throw new BadRequestError('Invalid website URLs submitted', parsed.error.format());
+    }
+
+    return this.portfoliosService.submitWebsiteIngestionJob(
+      req.authContext!,
+      portfolioReference,
+      parsed.data
+    );
+  }
+
   @Get(':portfolioReference/ingestion-jobs/:jobId')
   @ApiOperation({ summary: 'Get status of an ingestion job for a portfolio' })
   async getJobStatus(
@@ -196,6 +229,71 @@ export class PortfoliosController {
     }
 
     return this.portfoliosService.askQuestion(req.authContext!, portfolioReference, question.trim());
+  }
+
+  @Post([':portfolioReference/crawls', ':portfolioReference/crawl'])
+  @HttpCode(HttpStatus.ACCEPTED)
+  @ApiOperation({ summary: 'Start a multi-page static website crawl for a portfolio' })
+  async startCrawl(
+    @Req() req: Request,
+    @Param('portfolioReference') portfolioReference: string,
+    @Body() body: any
+  ) {
+    const rawUrl = body?.url || body?.rootUrl;
+    if (!rawUrl || typeof rawUrl !== 'string' || !rawUrl.trim()) {
+      throw new BadRequestError('Request must include a valid "url" string.');
+    }
+
+    const urlSchema = z.string().url('Must be a valid HTTP or HTTPS URL');
+    const parsed = urlSchema.safeParse(rawUrl.trim());
+    if (!parsed.success) {
+      throw new BadRequestError('Invalid website root URL submitted', parsed.error.format());
+    }
+
+    const maxPages = body?.maxPages ? Number(body.maxPages) : undefined;
+    const maxDepth = body?.maxDepth ? Number(body.maxDepth) : undefined;
+
+    return this.portfoliosService.startWebsiteCrawl(req.authContext!, portfolioReference, {
+      url: parsed.data,
+      maxPages,
+      maxDepth,
+    });
+  }
+
+  @Get([':portfolioReference/crawls/:crawlJobId', ':portfolioReference/crawl/:crawlJobId'])
+  @ApiOperation({ summary: 'Get status and discovered pages of a website crawl job' })
+  async getCrawlJob(
+    @Req() req: Request,
+    @Param('portfolioReference') portfolioReference: string,
+    @Param('crawlJobId') crawlJobId: string
+  ) {
+    return this.portfoliosService.getCrawlJob(req.authContext!, portfolioReference, crawlJobId);
+  }
+
+  @Get([':portfolioReference/crawls', ':portfolioReference/crawl'])
+  @ApiOperation({ summary: 'List website crawl jobs for a portfolio' })
+  async listCrawlJobs(
+    @Req() req: Request,
+    @Param('portfolioReference') portfolioReference: string
+  ) {
+    return this.portfoliosService.listCrawlJobs(req.authContext!, portfolioReference);
+  }
+
+  @Post([':portfolioReference/crawls/:crawlJobId/retry', ':portfolioReference/crawl/:crawlJobId/retry'])
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Retry failed or skipped pages within a crawl job' })
+  async retryCrawlJob(
+    @Req() req: Request,
+    @Param('portfolioReference') portfolioReference: string,
+    @Param('crawlJobId') crawlJobId: string,
+    @Body() body?: any
+  ) {
+    return this.portfoliosService.retryCrawlJob(
+      req.authContext!,
+      portfolioReference,
+      crawlJobId,
+      body?.pageUrl || body?.url
+    );
   }
 
   @Delete(':portfolioReference')

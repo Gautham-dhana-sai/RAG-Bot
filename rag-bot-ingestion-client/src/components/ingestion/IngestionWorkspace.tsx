@@ -1,23 +1,30 @@
 import React, { memo, useState, useCallback } from 'react';
-import { Portal, FileItem } from '../../types';
+import { Portal, FileItem, DocumentInfo, IngestionJobDocument } from '../../types';
 import { useAuth } from '../../context/AuthContext';
 import { FileUploadSector } from './FileUploadSector';
 import { UrlImportSector } from './UrlImportSector';
+import { WebsiteImportSector } from './WebsiteImportSector';
 import { validateFileOrPhotoUrlClient } from '../../utils/validators';
 
 interface IngestionWorkspaceProps {
   portal: Portal;
   onJobStarted: (jobId: string) => void;
   onDocumentsUpdated: () => void;
+  portalDocuments?: DocumentInfo[];
+  jobDocuments?: IngestionJobDocument[];
+  onRetryUrl?: (url: string) => void;
 }
 
 export const IngestionWorkspace: React.FC<IngestionWorkspaceProps> = memo(({
   portal,
   onJobStarted,
   onDocumentsUpdated,
+  portalDocuments = [],
+  jobDocuments = [],
+  onRetryUrl,
 }) => {
   const { getClient } = useAuth();
-  const [activeTab, setActiveTab] = useState<'files' | 'urls'>('files');
+  const [activeTab, setActiveTab] = useState<'files' | 'urls' | 'websites'>('files');
 
   // Direct files state
   const [selectedFiles, setSelectedFiles] = useState<FileItem[]>([]);
@@ -26,6 +33,7 @@ export const IngestionWorkspace: React.FC<IngestionWorkspaceProps> = memo(({
 
   // URL import state
   const [urlInputs, setUrlInputs] = useState<string[]>(['']);
+  const [urlErrors, setUrlErrors] = useState<(string | null)[]>([]);
   const [isSubmittingUrls, setIsSubmittingUrls] = useState(false);
   const [urlError, setUrlError] = useState<string | null>(null);
 
@@ -64,10 +72,12 @@ export const IngestionWorkspace: React.FC<IngestionWorkspaceProps> = memo(({
   // URL Handlers
   const handleAddUrlRow = useCallback(() => {
     setUrlInputs(prev => [...prev, '']);
+    setUrlErrors(prev => [...prev, null]);
   }, []);
 
   const handleRemoveUrlRow = useCallback((index: number) => {
     setUrlInputs(prev => (prev.length > 1 ? prev.filter((_, i) => i !== index) : ['']));
+    setUrlErrors(prev => (prev.length > 1 ? prev.filter((_, i) => i !== index) : [null]));
   }, []);
 
   const handleChangeUrl = useCallback((index: number, val: string) => {
@@ -76,25 +86,47 @@ export const IngestionWorkspace: React.FC<IngestionWorkspaceProps> = memo(({
       copy[index] = val;
       return copy;
     });
+    setUrlErrors(prev => {
+      if (!prev[index]) return prev;
+      const copy = [...prev];
+      copy[index] = null;
+      return copy;
+    });
+    setUrlError(null);
   }, []);
 
   const handleSubmitUrls = useCallback(async () => {
-    const cleanUrls = urlInputs.map(u => u.trim()).filter(Boolean);
-    if (cleanUrls.length === 0) {
-      setUrlError('Please enter at least one valid HTTP or HTTPS document/photo URL.');
+    // 1. Validate all rows and map error messages to specific input indices
+    const rowErrors: (string | null)[] = urlInputs.map((val) => {
+      const trimmed = val.trim();
+      if (!trimmed) {
+        return urlInputs.length === 1
+          ? 'Please enter a valid document or photo URL.'
+          : 'Please enter a valid URL or remove this empty field.';
+      }
+      const check = validateFileOrPhotoUrlClient(trimmed);
+      if (!check.isValid) {
+        return check.reason || 'Invalid URL.';
+      }
+      return null;
+    });
+
+    const hasAnyErrors = rowErrors.some(err => err !== null);
+    if (hasAnyErrors) {
+      setUrlErrors(rowErrors);
+      setUrlError(null);
       return;
     }
 
-    for (const url of cleanUrls) {
-      const check = validateFileOrPhotoUrlClient(url);
-      if (!check.isValid) {
-        setUrlError(check.reason || `Invalid URL: "${url}"`);
-        return;
-      }
+    const cleanUrls = urlInputs.map(u => u.trim()).filter(Boolean);
+    if (cleanUrls.length === 0) {
+      setUrlErrors(['Please enter at least one valid HTTP or HTTPS document/photo URL.']);
+      return;
     }
 
     setIsSubmittingUrls(true);
     setUrlError(null);
+    setUrlErrors([]);
 
     try {
       const client = getClient();
@@ -104,9 +136,23 @@ export const IngestionWorkspace: React.FC<IngestionWorkspaceProps> = memo(({
         onJobStarted(jobId);
       }
       setUrlInputs(['']);
+      setUrlErrors([]);
       onDocumentsUpdated();
     } catch (err: any) {
-      setUrlError(err.message || 'Failed to submit URLs. Please try again.');
+      const errMsg = err.message || 'Failed to submit URLs. Please try again.';
+      // Check if error message targets a specific rejected URL
+      const rejectedMatch = errMsg.match(/Rejected URL "([^"]+)":\s*(.+)/);
+      if (rejectedMatch) {
+        const [, badUrl, reason] = rejectedMatch;
+        const targetIdx = urlInputs.findIndex(u => u.trim() === badUrl.trim());
+        if (targetIdx !== -1) {
+          const updated = new Array(urlInputs.length).fill(null);
+          updated[targetIdx] = reason;
+          setUrlErrors(updated);
+          return;
+        }
+      }
+      setUrlError(errMsg);
     } finally {
       setIsSubmittingUrls(false);
     }
@@ -129,6 +175,13 @@ export const IngestionWorkspace: React.FC<IngestionWorkspaceProps> = memo(({
         >
           🔗 Import from URLs & Photos
         </button>
+        <button
+          type="button"
+          className={`tab-btn ${activeTab === 'websites' ? 'active' : ''}`}
+          onClick={() => setActiveTab('websites')}
+        >
+          🌐 Websites
+        </button>
       </div>
 
       {activeTab === 'files' ? (
@@ -142,22 +195,32 @@ export const IngestionWorkspace: React.FC<IngestionWorkspaceProps> = memo(({
             onSubmit={handleSubmitFiles}
           />
         </>
-      ) : (
+      ) : activeTab === 'urls' ? (
         <>
           {urlError && <div className="alert-box alert-error">{urlError}</div>}
           <UrlImportSector
             urlInputs={urlInputs}
+            urlErrors={urlErrors}
             isSubmitting={isSubmittingUrls}
             onAddRow={handleAddUrlRow}
             onRemoveRow={handleRemoveUrlRow}
             onChangeUrl={handleChangeUrl}
             onSubmit={handleSubmitUrls}
+            onNavigateToWebsites={() => setActiveTab('websites')}
           />
         </>
+      ) : (
+        <WebsiteImportSector
+          portal={portal}
+          portalDocuments={portalDocuments}
+          jobDocuments={jobDocuments}
+          onRetryUrl={onRetryUrl}
+          onJobStarted={onJobStarted}
+          onDocumentsUpdated={onDocumentsUpdated}
+        />
       )}
     </div>
   );
 });
 
 IngestionWorkspace.displayName = 'IngestionWorkspace';
-

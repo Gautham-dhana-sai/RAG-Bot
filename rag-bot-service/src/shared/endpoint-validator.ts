@@ -199,7 +199,7 @@ export function validateFileOrPhotoUrl(rawUrl: string): { isValid: boolean; reas
     if (pathname.endsWith(`.${ext}`)) {
       return {
         isValid: false,
-        reason: `HTML webpages (.${ext}) are not supported. Only direct file and photo URLs (.pdf, .docx, .txt, .png, .jpg, .webp) can be imported.`,
+        reason: `HTML webpages (.${ext}) are not supported here. To crawl or ingest web pages, please use the Websites tab. Only direct file and photo URLs (.pdf, .docx, .txt, .png, .jpg, .webp) can be imported.`,
       };
     }
   }
@@ -232,12 +232,12 @@ export function validateFileOrPhotoUrl(rawUrl: string): { isValid: boolean; reas
   if (pathname === '/' || pathname === '' || dotIndex === -1) {
     return {
       isValid: false,
-      reason: `URL does not point to a supported file or photo. Please provide a direct link to a PDF, DOCX, TXT, PNG, JPG, or WebP file (e.g. https://example.com/document.pdf). Webpage crawling is not supported.`,
+      reason: `URL does not point to a supported file or photo. Please provide a direct link to a PDF, DOCX, TXT, PNG, JPG, or WebP file (e.g. https://example.com/document.pdf). To crawl or ingest web pages, please use the Websites tab.`,
     };
   }
 
   return {
     isValid: false,
-    reason: `Unsupported file extension in URL "${pathname}". Supported formats are PDF, DOCX, TXT, PNG, JPEG, and WebP.`,
+    reason: `Unsupported file extension in URL "${pathname}". Supported formats are PDF, DOCX, TXT, PNG, JPEG, and WebP. To crawl or ingest web pages, please use the Websites tab.`,
   };
 }

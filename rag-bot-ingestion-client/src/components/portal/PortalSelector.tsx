@@ -49,8 +49,8 @@ export const PortalSelector: React.FC<PortalSelectorProps> = memo(({
           >
             <span className="portal-chip-name">{portal.name}</span>
             {portal.documentCount !== undefined && (
-              <span className="portal-chip-doc-count" title={`${portal.documentCount} document(s)`}>
-                {portal.documentCount} docs
+              <span className="portal-chip-doc-count" title={`${portal.documentCount} knowledge source(s)`}>
+                {portal.documentCount} {portal.documentCount === 1 ? 'source' : 'sources'}
               </span>
             )}
           </button>

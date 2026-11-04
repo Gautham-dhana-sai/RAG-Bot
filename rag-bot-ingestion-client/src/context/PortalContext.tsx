@@ -1,18 +1,21 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react';
-import { Portal, DocumentInfo } from '../types';
+import { Portal, DocumentInfo, CrawlJob } from '../types';
 import { useAuth } from './AuthContext';
 
 interface PortalContextType {
   portals: Portal[];
   selectedPortal: Portal | null;
   portalDocuments: DocumentInfo[];
+  portalCrawls: CrawlJob[];
   isLoadingPortals: boolean;
   isLoadingDocuments: boolean;
+  isLoadingCrawls: boolean;
   portalError: string | null;
   setSelectedPortal: (portal: Portal | null) => void;
   setPortalError: (err: string | null) => void;
   loadPortals: () => Promise<void>;
   loadPortalDocuments: (portalId: string) => Promise<void>;
+  loadPortalCrawls: (portalId: string) => Promise<void>;
   createPortal: (url: string, name?: string) => Promise<Portal>;
   deletePortal: (portalId: string) => Promise<void>;
 }
@@ -24,8 +27,10 @@ export const PortalProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const [portals, setPortals] = useState<Portal[]>([]);
   const [selectedPortal, setSelectedPortal] = useState<Portal | null>(null);
   const [portalDocuments, setPortalDocuments] = useState<DocumentInfo[]>([]);
+  const [portalCrawls, setPortalCrawls] = useState<CrawlJob[]>([]);
   const [isLoadingPortals, setIsLoadingPortals] = useState(false);
   const [isLoadingDocuments, setIsLoadingDocuments] = useState(false);
+  const [isLoadingCrawls, setIsLoadingCrawls] = useState(false);
   const [portalError, setPortalError] = useState<string | null>(null);
 
   const loadPortals = useCallback(async () => {
@@ -63,19 +68,42 @@ export const PortalProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     }
   }, [authToken, getClient]);
 
-  const loadPortalDocuments = useCallback(async (portalId: string) => {
+  const loadPortalCrawls = useCallback(async (portalId: string) => {
     if (!authToken || !portalId) return;
-    setIsLoadingDocuments(true);
+    if (portalCrawls.length === 0) {
+      setIsLoadingCrawls(true);
+    }
     try {
       const client = getClient();
-      const docs = await client.getPortfolioDocuments(portalId);
+      const crawls = await client.listPortalCrawls(portalId);
+      if (Array.isArray(crawls)) {
+        setPortalCrawls(crawls);
+      }
+    } catch {
+      // ignore
+    } finally {
+      setIsLoadingCrawls(false);
+    }
+  }, [authToken, getClient, portalCrawls.length]);
+
+  const loadPortalDocuments = useCallback(async (portalId: string) => {
+    if (!authToken || !portalId) return;
+    if (portalDocuments.length === 0) {
+      setIsLoadingDocuments(true);
+    }
+    try {
+      const client = getClient();
+      const [docs] = await Promise.all([
+        client.getPortfolioDocuments(portalId),
+        loadPortalCrawls(portalId),
+      ]);
       setPortalDocuments(docs);
     } catch {
       // keep existing documents if query fails
     } finally {
       setIsLoadingDocuments(false);
     }
-  }, [authToken, getClient]);
+  }, [authToken, getClient, loadPortalCrawls, portalDocuments.length]);
 
   // Initial load when authToken changes
   useEffect(() => {
@@ -85,6 +113,7 @@ export const PortalProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       setPortals([]);
       setSelectedPortal(null);
       setPortalDocuments([]);
+      setPortalCrawls([]);
     }
   }, [authToken, loadPortals]);
 
@@ -94,6 +123,7 @@ export const PortalProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       loadPortalDocuments(selectedPortal.id);
     } else {
       setPortalDocuments([]);
+      setPortalCrawls([]);
     }
   }, [selectedPortal?.id, loadPortalDocuments]);
 
@@ -124,31 +154,38 @@ export const PortalProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     setPortals(prev => prev.filter(p => p.id !== portalId));
     setSelectedPortal(prev => (prev?.id === portalId ? null : prev));
     setPortalDocuments([]);
+    setPortalCrawls([]);
   }, [getClient]);
 
   const value = useMemo(() => ({
     portals,
     selectedPortal,
     portalDocuments,
+    portalCrawls,
     isLoadingPortals,
     isLoadingDocuments,
+    isLoadingCrawls,
     portalError,
     setSelectedPortal,
     setPortalError,
     loadPortals,
     loadPortalDocuments,
+    loadPortalCrawls,
     createPortal,
     deletePortal,
   }), [
     portals,
     selectedPortal,
     portalDocuments,
+    portalCrawls,
     isLoadingPortals,
     isLoadingDocuments,
+    isLoadingCrawls,
     portalError,
     setSelectedPortal,
     loadPortals,
     loadPortalDocuments,
+    loadPortalCrawls,
     createPortal,
     deletePortal,
   ]);

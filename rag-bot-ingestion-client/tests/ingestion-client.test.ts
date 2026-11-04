@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { IngestionApiClient } from '../src/api';
+import { validateFileOrPhotoUrlClient } from '../src/utils/validators';
 
 describe('IngestionApiClient', () => {
   let client: IngestionApiClient;
@@ -171,5 +172,135 @@ describe('IngestionApiClient', () => {
     expect(result.jobId).toBe('job-123');
     expect(result.status).toBe('PROCESSING');
     expect(result.totalDocuments).toBe(2);
+  });
+
+  it('should clean doc citations without corrupting markdown bold or bullets', async () => {
+    const { cleanDocCitationTags } = await import('../src/utils/formatters');
+    const input = 'Here is the experience [DOC-12345]:\n### **Inncircles Technologies**\n- **Role**: Developer (CHUNK-678)';
+    const cleaned = cleanDocCitationTags(input);
+    expect(cleaned).toContain('### **Inncircles Technologies**');
+    expect(cleaned).toContain('- **Role**: Developer');
+    expect(cleaned).not.toContain('DOC-12345');
+    expect(cleaned).not.toContain('CHUNK-678');
+  });
+
+  it('should submit website URL via submitPortalWebsites and submitWebsite', async () => {
+    client.setAuthToken('ragbot_sess_login999');
+    const mockResponse = {
+      jobId: 'web-job-1',
+      entityId: 'port-1',
+      tenantId: 't-1',
+      status: 'PENDING',
+      totalDocuments: 1,
+      statusUrl: '/v1/portals/port-1/ingestion-jobs/web-job-1',
+      createdAt: new Date().toISOString(),
+    };
+
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => mockResponse,
+    });
+
+    const res1 = await client.submitPortalWebsites('port-1', 'https://example.com/about');
+    expect(res1.jobId).toBe('web-job-1');
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://localhost:3000/v1/portals/port-1/websites',
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ url: 'https://example.com/about' }),
+      })
+    );
+
+    const res2 = await client.submitWebsite('port-1', 'https://example.com/pricing');
+    expect(res2.jobId).toBe('web-job-1');
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://localhost:3000/api/ingestion/websites',
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ portfolioId: 'port-1', url: 'https://example.com/pricing' }),
+      })
+    );
+  });
+
+  describe('validateFileOrPhotoUrlClient', () => {
+    it('should reject webpage and social media links and guide user to Websites tab', () => {
+      const fbUrl = 'https://www.facebook.com/groups/756561709660282/posts/1300105771972537/';
+      const res = validateFileOrPhotoUrlClient(fbUrl);
+      expect(res.isValid).toBe(false);
+      expect(res.reason).toContain('URL does not point to a supported file or photo');
+      expect(res.reason).toContain('Websites tab');
+      expect(res.reason).not.toContain('Webpage crawling is not supported');
+    });
+
+    it('should reject HTML files and guide user to Websites tab', () => {
+      const htmlUrl = 'https://example.com/about.html';
+      const res = validateFileOrPhotoUrlClient(htmlUrl);
+      expect(res.isValid).toBe(false);
+      expect(res.reason).toContain('HTML webpages (.html) cannot be imported here');
+      expect(res.reason).toContain('Websites tab');
+    });
+
+    it('should accept valid file and photo links', () => {
+      expect(validateFileOrPhotoUrlClient('https://example.com/document.pdf').isValid).toBe(true);
+      expect(validateFileOrPhotoUrlClient('https://example.com/photo.png').isValid).toBe(true);
+      expect(validateFileOrPhotoUrlClient('https://example.com/data.txt').isValid).toBe(true);
+    });
+  });
+
+  describe('Portal Knowledge Bar and Authoritative Crawl Job Representation (Scenarios E & F)', () => {
+    it('should submit multi-page crawl via client.startPortalCrawl', async () => {
+      client.setAuthToken('ragbot_sess_login999');
+      const mockCrawl = {
+        crawlJobId: 'crawl-123',
+        jobId: 'crawl-123',
+        rootUrl: 'https://example.com',
+        status: 'queued',
+      };
+
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => mockCrawl,
+      });
+
+      const res = await client.startPortalCrawl('port-1', {
+        url: 'https://example.com',
+        maxPages: 30,
+        maxDepth: 3,
+      });
+
+      expect(res.crawlJobId).toBe('crawl-123');
+      expect(global.fetch).toHaveBeenCalledWith(
+        'http://localhost:3000/v1/portals/port-1/crawls',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ url: 'https://example.com', maxPages: 30, maxDepth: 3 }),
+        })
+      );
+    });
+
+    it('should list portal crawls via client.listPortalCrawls', async () => {
+      client.setAuthToken('ragbot_sess_login999');
+      const mockCrawls = [
+        {
+          id: 'crawl-123',
+          rootUrl: 'https://example.com',
+          status: 'completed',
+          discoveredCount: 4,
+          completedCount: 4,
+        },
+      ];
+
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => mockCrawls,
+      });
+
+      const res = await client.listPortalCrawls('port-1');
+      expect(res.length).toBe(1);
+      expect(res[0].rootUrl).toBe('https://example.com');
+      expect(res[0].completedCount).toBe(4);
+    });
   });
 });

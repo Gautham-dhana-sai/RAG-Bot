@@ -163,7 +163,7 @@ export class SecureDownloader {
       const declaredContentType = response.headers['content-type'] || '';
       if (isHtmlContent(response.buffer, declaredContentType)) {
         throw new DownloadError(
-          'URL points to an HTML webpage rather than a supported document or image. Webpage crawling is not supported.',
+          'URL points to an HTML webpage rather than a supported document or image. To crawl or ingest web pages, please use the Websites tab.',
           400
         );
       }

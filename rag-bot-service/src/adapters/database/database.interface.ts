@@ -13,6 +13,9 @@ import {
   Message,
   AnswerCitation,
   ScoredChunk,
+  CrawlJob,
+  CrawlPage,
+  CrawlConfig,
 } from '../../types/index.js';
 
 export interface IDatabaseAdapter {
@@ -60,6 +63,7 @@ export interface IDatabaseAdapter {
     objectKey: string;
     isPublic?: boolean;
     status?: Document['status'];
+    sourceType?: string;
   }): Promise<Document>;
   updateDocumentStatus(tenantId: string, documentId: string, status: Document['status'], errorMessage?: string): Promise<void>;
   updateDocumentMetadata?(
@@ -98,6 +102,40 @@ export interface IDatabaseAdapter {
   updateJobDocumentStage(tenantId: string, jobId: string, documentId: string, stage: string, errorMessage?: string, downloadMetadata?: Record<string, any>): Promise<void>;
   getJobDocumentByDocumentId(documentId: string): Promise<IngestionJobDocument | null>;
   getJobDocuments(tenantId: string, jobId: string): Promise<(IngestionJobDocument & { document?: Document })[]>;
+
+  // Crawl Jobs & Pages
+  createCrawlJob(data: {
+    id?: string;
+    tenantId: string;
+    entityId: string;
+    rootUrl: string;
+    config?: CrawlConfig;
+  }): Promise<CrawlJob>;
+  getCrawlJob(tenantId: string, entityId: string, crawlJobId: string): Promise<CrawlJob | null>;
+  listCrawlJobs(tenantId: string, entityId: string): Promise<CrawlJob[]>;
+  updateCrawlJob(tenantId: string, crawlJobId: string, updates: Partial<CrawlJob>): Promise<void>;
+  createCrawlPages(pages: Array<{
+    tenantId: string;
+    entityId: string;
+    crawlJobId: string;
+    documentId?: string;
+    originalUrl: string;
+    normalizedUrl: string;
+    depth?: number;
+  }>): Promise<CrawlPage[]>;
+  getCrawlPages(tenantId: string, crawlJobId: string): Promise<CrawlPage[]>;
+  getCrawlPageByUrl(tenantId: string, crawlJobId: string, normalizedUrl: string): Promise<CrawlPage | null>;
+  updateCrawlPage(tenantId: string, crawlJobId: string, pageIdOrUrl: string, updates: Partial<CrawlPage>): Promise<void>;
+  getCrawlPageByDocumentId?(tenantId: string, documentId: string): Promise<CrawlPage | null>;
+  syncCrawlJobAggregates?(tenantId: string, crawlJobId: string): Promise<CrawlJob | null>;
+  incrementCrawlCounters(tenantId: string, crawlJobId: string, increments: {
+    discovered?: number;
+    queued?: number;
+    processing?: number;
+    completed?: number;
+    failed?: number;
+    skipped?: number;
+  }): Promise<void>;
 
   // Chunks & Hybrid Search
   hasPlaceholderChunks?(tenantId: string, documentId: string): Promise<boolean>;

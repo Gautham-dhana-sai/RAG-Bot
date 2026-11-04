@@ -7,7 +7,9 @@ import { ExtractionService } from '../extraction/extraction.service.js';
 import { ChunkingService } from '../chunking/chunking.service.js';
 import { EmbeddingsService } from '../embeddings/embeddings.service.js';
 import { UploadedFileItem, IngestionJobResponse } from './ingestion.types.js';
-import { IngestionJob, IngestionJobDocument, UrlIngestionJobResponse, UrlDownloadJobItem } from '../../types/index.js';
+import { IngestionJob, IngestionJobDocument, UrlIngestionJobResponse, UrlDownloadJobItem, CrawlConfig } from '../../types/index.js';
+import { normalizeUrl } from '../crawler/url-normalizer.js';
+import { WebsiteCrawlCoordinator } from '../crawler/website-crawl-coordinator.js';
 import { NotFoundError } from '../../shared/errors.js';
 import { generateUuid, computeSha256 } from '../../shared/utils.js';
 import { validateFileOrPhotoUrl } from '../../shared/endpoint-validator.js';
@@ -163,6 +165,7 @@ export class IngestionService {
         objectKey: initialObjectKey,
         isPublic: true,
         status: 'PENDING',
+        sourceType: 'URL_IMPORT',
       });
       const resolvedDocId = doc.id;
 
@@ -178,6 +181,135 @@ export class IngestionService {
         documentId: resolvedDocId,
         url,
         portfolioUrl,
+        attempt: 1,
+      });
+
+      urlJobItems.push({
+        jobId: job.id,
+        documentId: resolvedDocId,
+        url,
+        status: 'PENDING',
+        stage: 'QUEUED_FOR_DOWNLOAD',
+      });
+    }
+
+    const statusUrl = `/v1/tenants/${tenantId}/entities/${entityId}/ingestion-jobs/${job.id}`;
+
+    return {
+      jobId: job.id,
+      entityId,
+      tenantId,
+      status: job.status,
+      totalUrls: sanitizedUrls.length,
+      urls: urlJobItems,
+      statusUrl,
+      createdAt: job.createdAt.toISOString(),
+    };
+  }
+
+  /**
+   * Submit website URLs for static HTML extraction and vector ingestion.
+   */
+  async submitWebsiteIngestionJob(params: {
+    tenantId: string;
+    entityId: string;
+    urls: string[];
+    portfolioUrl?: string;
+  }): Promise<UrlIngestionJobResponse> {
+    const { tenantId, entityId, urls, portfolioUrl } = params;
+
+    if (!urls || urls.length === 0) {
+      throw new Error('At least one website URL must be provided for ingestion.');
+    }
+
+    if (urls.length > env.MAX_URLS_PER_BATCH) {
+      throw new Error(`Maximum of ${env.MAX_URLS_PER_BATCH} website URLs can be submitted per batch.`);
+    }
+
+    const sanitizedUrls: string[] = [];
+    for (const raw of urls) {
+      const trimmed = typeof raw === 'string' ? raw.trim() : '';
+      if (!trimmed) continue;
+      try {
+        const u = new URL(trimmed);
+        if (u.protocol !== 'http:' && u.protocol !== 'https:') {
+          throw new Error('Only HTTP and HTTPS URLs are allowed.');
+        }
+        if (u.username || u.password) {
+          throw new Error('URLs with embedded credentials are not permitted.');
+        }
+        sanitizedUrls.push(trimmed);
+      } catch (err: any) {
+        throw new Error(`Invalid website URL "${trimmed}": ${err.message}`);
+      }
+    }
+
+    if (sanitizedUrls.length === 0) {
+      throw new Error('No valid website URLs provided.');
+    }
+
+    // 1. Create Ingestion Job record with source_type = 'WEBSITE_IMPORT'
+    const job = await this.db.createIngestionJob({
+      tenantId,
+      entityId,
+      totalDocuments: sanitizedUrls.length,
+      sourceType: 'WEBSITE_IMPORT',
+      metadata: { originalUrls: sanitizedUrls, sourceType: 'website' },
+    });
+
+    const urlJobItems: UrlDownloadJobItem[] = [];
+
+    // 2. Create job documents and enqueue URL download messages with sourceType: 'website'
+    for (const url of sanitizedUrls) {
+      const documentId = generateUuid();
+
+      let filename = 'webpage.md';
+      try {
+        const u = new URL(url);
+        const hostSlug = u.hostname.replace(/[^a-zA-Z0-9.-]/g, '_');
+        const pathSlug = u.pathname.replace(/^\/+|\/+$/g, '').replace(/[^a-zA-Z0-9.-]/g, '_') || 'home';
+        filename = `${hostSlug}_${pathSlug}.md`;
+      } catch {
+        // fallback
+      }
+
+      let folderPrefix = portfolioUrl;
+      if (!folderPrefix) {
+        const entity = await this.db.getEntityById(tenantId, entityId);
+        folderPrefix = entity?.portfolioUrl || entity?.slug || `${tenantId}/${entityId}`;
+      }
+      const initialObjectKey = buildS3ObjectKey(folderPrefix, filename);
+      const initialContentHash = computeSha256(`website:${entityId}:${url}`);
+
+      const doc = await this.db.createDocument({
+        id: documentId,
+        tenantId,
+        entityId,
+        originalFilename: filename,
+        mimeType: 'text/markdown',
+        sizeBytes: 0,
+        contentHash: initialContentHash,
+        objectKey: initialObjectKey,
+        isPublic: true,
+        status: 'PENDING',
+        sourceType: 'WEBSITE_IMPORT',
+      });
+      const resolvedDocId = doc.id;
+
+      await this.db.createJobDocument(tenantId, job.id, resolvedDocId, {
+        sourceUrl: url,
+        stage: 'QUEUED_FOR_DOWNLOAD',
+        downloadMetadata: { sourceType: 'webpage' },
+      });
+
+      await this.queue.enqueueUrlDownloadJob({
+        tenantId,
+        entityId,
+        jobId: job.id,
+        documentId: resolvedDocId,
+        url,
+        portfolioUrl,
+        sourceType: 'website',
         attempt: 1,
       });
 
@@ -234,7 +366,30 @@ export class IngestionService {
     }
 
     // Process document through RAG pipeline
-    await this.processSingleDocument(tenantId, entityId, jobId, documentId);
+    try {
+      await this.processSingleDocument(tenantId, entityId, jobId, documentId);
+    } catch (err: any) {
+      const errMsg = err?.message || 'Processing failed';
+      logger.error(`[IngestionWorker] Error processing S3 document ${documentId}: ${errMsg}`);
+      await this.db.updateDocumentStatus(tenantId, documentId, 'FAILED', errMsg);
+      if (jobDoc && jobDoc.jobId) {
+        await this.db.updateJobDocumentStatus(tenantId, jobDoc.jobId, documentId, 'FAILED', errMsg);
+      }
+      if (this.db.getCrawlPageByDocumentId) {
+        const crawlPage = await this.db.getCrawlPageByDocumentId(tenantId, documentId);
+        if (crawlPage) {
+          await this.db.updateCrawlPage(tenantId, crawlPage.crawlJobId, crawlPage.id, {
+            status: 'failed',
+            stage: 'FAILED',
+            errorMessage: errMsg,
+          });
+          if (this.db.syncCrawlJobAggregates) {
+            await this.db.syncCrawlJobAggregates(tenantId, crawlPage.crawlJobId);
+          }
+        }
+      }
+      throw err;
+    }
 
     // If part of an ingestion job, verify if the overall job status can be updated to READY
     if (jobDoc && jobDoc.jobId) {
@@ -280,8 +435,18 @@ export class IngestionService {
     let failedCount = 0;
     const errors: string[] = [];
 
+    const targetDocId = typeof payload === 'object' ? payload?.documentId : undefined;
+
     for (let i = 0; i < jobDocs.length; i++) {
       const jd = jobDocs[i];
+      if (targetDocId && jd.documentId !== targetDocId) {
+        continue;
+      }
+      // If this is a URL/webpage source document that hasn't finished downloading to S3 yet, wait for download
+      if (jd.sourceUrl && jd.stage !== 'UPLOADED_TO_S3' && jd.status !== 'READY') {
+        continue;
+      }
+
       logger.info(`[IngestionWorker] [${i + 1}/${jobDocs.length}] Processing document ID: ${jd.documentId}`);
       try {
         await this.processSingleDocument(tenantId, entityId, jobId, jd.documentId);
@@ -294,17 +459,65 @@ export class IngestionService {
         logger.error(`[IngestionWorker] [${i + 1}/${jobDocs.length}] Failed to process document ${jd.documentId}:`, err);
         await this.db.updateJobDocumentStatus(tenantId, jobId, jd.documentId, 'FAILED', errMsg);
         await this.db.updateDocumentStatus(tenantId, jd.documentId, 'FAILED', errMsg);
+        if (this.db.getCrawlPageByDocumentId) {
+          const crawlPage = await this.db.getCrawlPageByDocumentId(tenantId, jd.documentId);
+          if (crawlPage) {
+            await this.db.updateCrawlPage(tenantId, crawlPage.crawlJobId, crawlPage.id, {
+              status: 'failed',
+              stage: 'FAILED',
+              errorMessage: errMsg,
+            });
+            if (this.db.syncCrawlJobAggregates) {
+              await this.db.syncCrawlJobAggregates(tenantId, crawlPage.crawlJobId);
+            }
+          }
+        }
       }
     }
 
-    const finalStatus = failedCount === jobDocs.length && jobDocs.length > 0 ? 'FAILED' : 'READY';
-    await this.db.updateJobStatus(tenantId, jobId, finalStatus, {
-      processed: processedCount,
-      failed: failedCount,
-      errorSummary: errors.length > 0 ? errors.join('; ') : undefined,
-    });
+    const updatedJobDocs = await this.db.getJobDocuments(tenantId, jobId);
+    const hasPendingDownloads = updatedJobDocs.some(d => 
+      Boolean(d.sourceUrl) && (
+        d.stage === 'QUEUED_FOR_DOWNLOAD' || 
+        d.stage === 'DOWNLOADING' || 
+        d.stage === 'FETCHING_PAGE' || 
+        d.stage === 'EXTRACTING_CONTENT'
+      )
+    );
 
-    logger.info(`[IngestionWorker] Completed job ${jobId}. Final Status: ${finalStatus}. Processed: ${processedCount}, Failed: ${failedCount}`);
+    const readyDocs = updatedJobDocs.filter(d => d.status === 'READY');
+    const failedDocs = updatedJobDocs.filter(d => d.status === 'FAILED');
+    const isAllTerminal =
+      updatedJobDocs.length > 0 &&
+      readyDocs.length + failedDocs.length === updatedJobDocs.length;
+
+    const hasPendingDocs =
+      hasPendingDownloads ||
+      updatedJobDocs.some(
+        d =>
+          d.status === 'PENDING' ||
+          d.status === 'PROCESSING' ||
+          d.stage === 'UPLOADED_TO_S3' ||
+          d.stage === 'QUEUED_FOR_DOWNLOAD' ||
+          d.stage === 'DOWNLOADING' ||
+          d.stage === 'FETCHING_PAGE' ||
+          d.stage === 'EXTRACTING_CONTENT'
+      );
+
+    if (isAllTerminal && !hasPendingDocs) {
+      const finalStatus = failedDocs.length === updatedJobDocs.length && updatedJobDocs.length > 0 ? 'FAILED' : 'READY';
+      await this.db.updateJobStatus(tenantId, jobId, finalStatus, {
+        processed: readyDocs.length,
+        failed: failedDocs.length,
+        errorSummary: errors.length > 0 ? errors.join('; ') : undefined,
+      });
+      logger.info(`[IngestionWorker] Completed job ${jobId}. Final Status: ${finalStatus}. Processed: ${readyDocs.length}, Failed: ${failedDocs.length}`);
+    } else {
+      await this.db.updateJobStatus(tenantId, jobId, 'PROCESSING', {
+        processed: readyDocs.length,
+        failed: failedDocs.length,
+      });
+    }
   }
 
   /**
@@ -367,11 +580,39 @@ export class IngestionService {
 
     // 3. Chunk extracted content
     logger.info(`[DocPipeline] Step 3/6: Chunking extracted text...`);
-    const unindexedChunks = this.chunkingService.chunkExtractedContent(extraction, {
-      tenantId,
-      entityId,
-      documentId,
-    });
+    const jobDoc = await this.db.getJobDocumentByDocumentId(documentId);
+    const isWebpage =
+      jobDoc?.downloadMetadata?.sourceType === 'webpage' ||
+      document.sourceType === 'WEBSITE_IMPORT' ||
+      document.sourceType === 'WEBSITE_CRAWL' ||
+      (document.mimeType === 'text/markdown' && Boolean(jobDoc?.sourceUrl));
+
+    const chunkMetadata: Record<string, any> = {
+      ...(extraction.metadata || {}),
+      ...(isWebpage
+        ? {
+            sourceType: 'webpage',
+            sourceUrl: jobDoc?.sourceUrl || jobDoc?.downloadMetadata?.canonicalUrl,
+            canonicalUrl: jobDoc?.downloadMetadata?.canonicalUrl || jobDoc?.sourceUrl,
+            title: jobDoc?.downloadMetadata?.title || document.originalFilename,
+          }
+        : {
+            sourceType: jobDoc?.sourceUrl ? 'url_file' : 'file',
+            sourceUrl: jobDoc?.sourceUrl,
+          }),
+    };
+
+    const unindexedChunks = this.chunkingService.chunkExtractedContent(
+      {
+        ...extraction,
+        metadata: chunkMetadata,
+      },
+      {
+        tenantId,
+        entityId,
+        documentId,
+      }
+    );
 
     if (unindexedChunks.length === 0) {
       throw new Error('No chunks generated from extracted text');
@@ -393,6 +634,41 @@ export class IngestionService {
     logger.info(`[DocPipeline] Step 6/6: Marking document ${documentId} as READY.`);
     await this.db.updateDocumentStatus(tenantId, documentId, 'READY');
     await this.db.updateJobDocumentStatus(tenantId, jobId, documentId, 'READY');
+
+    // Sync crawl page status and crawl job aggregates if document belongs to a website crawl
+    if (this.db.getCrawlPageByDocumentId) {
+      const crawlPage = await this.db.getCrawlPageByDocumentId(tenantId, documentId);
+      if (crawlPage) {
+        await this.db.updateCrawlPage(tenantId, crawlPage.crawlJobId, crawlPage.id, {
+          status: 'completed',
+          stage: 'READY',
+        });
+        if (this.db.syncCrawlJobAggregates) {
+          await this.db.syncCrawlJobAggregates(tenantId, crawlPage.crawlJobId);
+        }
+      }
+    }
+
+    // Reconcile overall ingestion job status if all documents in the job have reached terminal state
+    try {
+      const updatedJobDocs = await this.db.getJobDocuments(tenantId, jobId);
+      const readyDocs = updatedJobDocs.filter(d => d.status === 'READY');
+      const failedDocs = updatedJobDocs.filter(d => d.status === 'FAILED');
+      const isAllTerminal =
+        updatedJobDocs.length > 0 &&
+        readyDocs.length + failedDocs.length === updatedJobDocs.length;
+
+      if (isAllTerminal) {
+        const finalStatus = failedDocs.length === updatedJobDocs.length ? 'FAILED' : 'READY';
+        await this.db.updateJobStatus(tenantId, jobId, finalStatus, {
+          processed: readyDocs.length,
+          failed: failedDocs.length,
+        });
+        logger.info(`[DocPipeline] Ingestion job ${jobId} updated to final status: ${finalStatus} (${readyDocs.length} ready, ${failedDocs.length} failed)`);
+      }
+    } catch (jobErr: any) {
+      logger.warn(`[DocPipeline] Could not reconcile job ${jobId} status: ${jobErr?.message}`);
+    }
   }
 
   async getJob(tenantId: string, entityId: string, jobId: string): Promise<IngestionJob> {
@@ -405,5 +681,162 @@ export class IngestionService {
     await this.getJob(tenantId, entityId, jobId); // verify exists and access
     return this.db.getJobDocuments(tenantId, jobId);
   }
-}
+  /**
+   * Start a multi-page website crawl for a root website URL.
+   */
+  async startWebsiteCrawl(params: {
+    tenantId: string;
+    entityId: string;
+    url: string;
+    portfolioUrl?: string;
+    config?: CrawlConfig;
+  }): Promise<{
+    crawlJobId: string;
+    jobId: string;
+    entityId: string;
+    tenantId: string;
+    status: string;
+    rootUrl: string;
+    statusUrl: string;
+    createdAt: string;
+  }> {
+    const { tenantId, entityId, url, portfolioUrl, config } = params;
+    const normalizedRoot = normalizeUrl(url);
+    if (!normalizedRoot) {
+      throw new Error(`Invalid website root URL: "${url}". Please enter a valid HTTP or HTTPS URL.`);
+    }
 
+    const crawlJobId = generateUuid();
+
+    // 1. Create Ingestion Job record with source_type = 'WEBSITE_CRAWL'
+    await this.db.createIngestionJob({
+      id: crawlJobId,
+      tenantId,
+      entityId,
+      totalDocuments: 1,
+      sourceType: 'WEBSITE_CRAWL',
+      metadata: { rootUrl: normalizedRoot, config: config || {}, sourceType: 'website_crawl' },
+    });
+
+    // 2. Create Crawl Job record
+    const crawlJob = await this.db.createCrawlJob({
+      id: crawlJobId,
+      tenantId,
+      entityId,
+      rootUrl: normalizedRoot,
+      config: config || {},
+    });
+
+    // 3. Enqueue crawl coordinator message to download queue
+    await this.queue.enqueueUrlDownloadJob({
+      tenantId,
+      entityId,
+      jobId: crawlJobId,
+      url: normalizedRoot,
+      portfolioUrl,
+      sourceType: 'website_crawl',
+      action: 'WEBSITE_CRAWL',
+      attempt: 1,
+    });
+
+    // 4. In local mode, invoke coordinator discovery
+    const isLocal =
+      env.STORAGE_ADAPTER === 'local' ||
+      env.QUEUE_ADAPTER === 'local' ||
+      this.storage.constructor.name === 'LocalStorageAdapter' ||
+      this.queue.constructor.name === 'LocalQueueAdapter';
+
+    if (isLocal) {
+      setImmediate(async () => {
+        try {
+          const coordinator = new WebsiteCrawlCoordinator(this.db, this.queue);
+          await coordinator.executeDiscovery({
+            tenantId,
+            entityId,
+            crawlJobId,
+            rootUrl: normalizedRoot,
+            portfolioUrl,
+            config,
+          });
+        } catch (err: any) {
+          logger.error(`[IngestionService:Crawl] Local coordinator discovery error:`, err);
+        }
+      });
+    }
+
+    return {
+      crawlJobId: crawlJob.id,
+      jobId: crawlJob.id,
+      entityId,
+      tenantId,
+      status: 'queued',
+      rootUrl: normalizedRoot,
+      statusUrl: `/v1/portals/${entityId}/crawls/${crawlJob.id}`,
+      createdAt: crawlJob.createdAt.toISOString(),
+    };
+  }
+
+  /**
+   * Retry failed or skipped pages within an existing crawl job.
+   */
+  async retryCrawlJob(params: {
+    tenantId: string;
+    entityId: string;
+    crawlJobId: string;
+    pageUrl?: string;
+    portfolioUrl?: string;
+  }): Promise<{ message: string; retriedCount: number }> {
+    const { tenantId, entityId, crawlJobId, pageUrl, portfolioUrl } = params;
+    const crawlJob = await this.db.getCrawlJob(tenantId, entityId, crawlJobId);
+    if (!crawlJob) {
+      throw new NotFoundError('Crawl Job', crawlJobId);
+    }
+
+    const pages = await this.db.getCrawlPages(tenantId, crawlJobId);
+    const pagesToRetry = pages.filter(p => {
+      if (pageUrl && p.originalUrl !== pageUrl && p.normalizedUrl !== pageUrl) return false;
+      return p.status === 'failed' || p.status === 'skipped';
+    });
+
+    if (pagesToRetry.length === 0) {
+      return { message: 'No eligible failed or skipped pages to retry.', retriedCount: 0 };
+    }
+
+    for (const page of pagesToRetry) {
+      await this.db.updateCrawlPage(tenantId, crawlJobId, page.id, {
+        status: 'queued',
+        stage: 'QUEUED_FOR_DOWNLOAD',
+        errorMessage: undefined,
+        retryCount: (page.retryCount || 0) + 1,
+      });
+
+      await this.queue.enqueueUrlDownloadJob({
+        tenantId,
+        entityId,
+        jobId: crawlJobId,
+        documentId: page.documentId,
+        url: page.normalizedUrl,
+        portfolioUrl,
+        sourceType: 'website',
+        crawlJobId,
+        depth: page.depth,
+        action: 'WEBSITE_PAGE',
+        attempt: (page.retryCount || 0) + 1,
+      });
+    }
+
+    await this.db.updateCrawlJob(tenantId, crawlJobId, {
+      status: 'processing_pages',
+      failedCount: Math.max(0, crawlJob.failedCount - pagesToRetry.length),
+    });
+
+    if (this.db.syncCrawlJobAggregates) {
+      await this.db.syncCrawlJobAggregates(tenantId, crawlJobId);
+    }
+
+    return {
+      message: `Successfully re-queued ${pagesToRetry.length} page(s) for crawling.`,
+      retriedCount: pagesToRetry.length,
+    };
+  }
+}

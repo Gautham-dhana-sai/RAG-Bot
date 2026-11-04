@@ -24,7 +24,7 @@ export const PortalHeader: React.FC<PortalHeaderProps> = memo(({
               <span className="badge badge-public">Public Portal</span>
             )}
             <span className="badge badge-doc-count">
-              {documentCount} document{documentCount !== 1 ? 's' : ''} indexed
+              {documentCount} source{documentCount !== 1 ? 's' : ''} indexed
             </span>
           </div>
 

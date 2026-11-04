@@ -2,16 +2,91 @@
 
 export type IngestionJobStatus = 'PENDING' | 'PROCESSING' | 'READY' | 'FAILED';
 export type DocumentProcessingStatus = 'PENDING' | 'PROCESSING' | 'READY' | 'FAILED';
-export type JobSourceType = 'DIRECT_UPLOAD' | 'URL_IMPORT';
+export type JobSourceType = 'DIRECT_UPLOAD' | 'URL_IMPORT' | 'WEBSITE_IMPORT' | 'WEBSITE_CRAWL';
 export type JobDocumentStage =
   | 'QUEUED_FOR_DOWNLOAD'
+  | 'FETCHING_PAGE'
+  | 'EXTRACTING_CONTENT'
   | 'DOWNLOADING'
   | 'DOWNLOAD_FAILED'
+  | 'NO_CONTENT_FOUND'
   | 'UPLOADED_TO_S3'
   | 'QUEUED_FOR_INGESTION'
   | 'PROCESSING'
   | 'READY'
-  | 'FAILED';
+  | 'FAILED'
+  | 'SKIPPED';
+
+export type CrawlStatus =
+  | 'queued'
+  | 'discovering'
+  | 'processing_pages'
+  | 'completed'
+  | 'completed_with_errors'
+  | 'failed'
+  | 'cancelled';
+
+export type CrawlPageStatus =
+  | 'discovered'
+  | 'queued'
+  | 'fetching'
+  | 'extracting'
+  | 'uploaded'
+  | 'ingesting'
+  | 'completed'
+  | 'skipped'
+  | 'failed';
+
+export interface CrawlConfig {
+  maxPages?: number;
+  maxDepth?: number;
+  allowedOrigins?: string[];
+  includePatterns?: string[];
+  excludePatterns?: string[];
+  respectRobotsTxt?: boolean;
+}
+
+export interface CrawlJob {
+  id: string;
+  tenantId: string;
+  entityId: string;
+  rootUrl: string;
+  status: CrawlStatus;
+  config: CrawlConfig;
+  discoveredCount: number;
+  queuedCount: number;
+  processingCount: number;
+  completedCount: number;
+  failedCount: number;
+  skippedCount: number;
+  errorSummary?: string;
+  createdAt: Date;
+  updatedAt: Date;
+  completedAt?: Date;
+}
+
+export interface CrawlPage {
+  id: string;
+  tenantId: string;
+  entityId: string;
+  crawlJobId: string;
+  documentId?: string;
+  originalUrl: string;
+  normalizedUrl: string;
+  canonicalUrl?: string;
+  title?: string;
+  contentHash?: string;
+  objectKey?: string;
+  status: CrawlPageStatus;
+  stage?: string;
+  depth: number;
+  retryCount: number;
+  sizeBytes?: number;
+  errorMessage?: string;
+  createdAt: Date;
+  updatedAt: Date;
+  completedAt?: Date;
+}
 export type MessageSenderRole = 'user' | 'assistant' | 'system';
 
 export interface Tenant {
@@ -76,6 +151,9 @@ export interface Document {
   isPublic: boolean;
   status: DocumentProcessingStatus;
   errorMessage?: string;
+  sourceUrl?: string;
+  stage?: string;
+  sourceType?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -133,6 +211,7 @@ export interface IngestionJobDocument {
   status: DocumentProcessingStatus;
   sourceUrl?: string;
   stage?: JobDocumentStage;
+  sourceType?: string;
   errorMessage?: string;
   downloadMetadata?: Record<string, any>;
   createdAt: Date;

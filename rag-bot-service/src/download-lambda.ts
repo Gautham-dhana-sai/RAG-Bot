@@ -6,6 +6,14 @@ import { LocalStorageAdapter } from './adapters/storage/local-storage.adapter.js
 import { SqsQueueAdapter } from './adapters/queue/sqs-queue.adapter.js';
 import { LocalQueueAdapter } from './adapters/queue/local-queue.adapter.js';
 import { DownloadWorker } from './modules/downloader/download-worker.js';
+import { IngestionService } from './modules/ingestion/ingestion.service.js';
+import { DocumentsService } from './modules/documents/documents.service.js';
+import { ExtractionService } from './modules/extraction/extraction.service.js';
+import { ChunkingService } from './modules/chunking/chunking.service.js';
+import { EmbeddingsService } from './modules/embeddings/embeddings.service.js';
+import { OpenAIAIAdapter } from './adapters/ai/openai-ai.adapter.js';
+import { MockAIAdapter } from './adapters/ai/mock-ai.adapter.js';
+import { CohereAIAdapter } from './adapters/ai/cohere-ai.adapter.js';
 import { UrlDownloadMessagePayload } from './adapters/queue/queue.interface.js';
 import { logger } from './shared/logger.js';
 import { env } from './config/env.js';
@@ -55,8 +63,56 @@ async function bootstrapDownloadWorker(): Promise<DownloadWorker> {
       ? new SqsQueueAdapter(env.SQS_QUEUE_URL, env.AWS_REGION, env.URL_DOWNLOAD_QUEUE_URL)
       : new LocalQueueAdapter(true);
 
-  downloadWorkerInstance = new DownloadWorker(db, storage, queue);
-  logger.info('[Download Lambda] Bootstrapped successfully.');
+  // 4. Initialize AI Provider & Ingestion Services for immediate inline RAG ingestion
+  const isGoogleEndpoint =
+    env.AI_PROVIDER === 'gemini' ||
+    (env.OPENAI_BASE_URL && env.OPENAI_BASE_URL.includes('googleapis.com'));
+
+  const geminiKey =
+    env.GEMINI_API_KEY ||
+    (!env.OPENAI_API_KEY?.startsWith('sk-') ? env.OPENAI_API_KEY : '') ||
+    '';
+
+  const ai = isTestEnv
+    ? new MockAIAdapter(env.EMBEDDING_DIMENSIONS)
+    : isGoogleEndpoint
+      ? new OpenAIAIAdapter({
+          apiKey: geminiKey,
+          baseUrl: env.OPENAI_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta/openai',
+          chatModel: env.CHAT_MODEL,
+          embeddingModel: env.EMBEDDING_MODEL,
+        })
+      : env.AI_PROVIDER === 'cohere' && env.COHERE_API_KEY
+        ? new CohereAIAdapter({
+            apiKey: env.COHERE_API_KEY,
+            chatModel: env.COHERE_CHAT_MODEL,
+            embeddingModel: env.COHERE_EMBEDDING_MODEL,
+          })
+        : env.AI_PROVIDER === 'openai' && env.OPENAI_API_KEY
+          ? new OpenAIAIAdapter({
+              apiKey: env.OPENAI_API_KEY,
+              chatModel: env.CHAT_MODEL,
+              embeddingModel: env.EMBEDDING_MODEL,
+            })
+          : new MockAIAdapter(env.EMBEDDING_DIMENSIONS);
+
+  const docsService = new DocumentsService(db, storage);
+  const extractionService = new ExtractionService();
+  const chunkingService = new ChunkingService(env.CHUNK_SIZE, env.CHUNK_OVERLAP);
+  const embeddingsService = new EmbeddingsService(ai);
+
+  const ingestionService = new IngestionService(
+    db,
+    storage,
+    queue,
+    docsService,
+    extractionService,
+    chunkingService,
+    embeddingsService
+  );
+
+  downloadWorkerInstance = new DownloadWorker(db, storage, queue, ingestionService);
+  logger.info('[Download Lambda] Bootstrapped successfully with inline RAG ingestion enabled.');
   return downloadWorkerInstance;
 }
 
@@ -117,6 +173,14 @@ export const handler = async (event: any, context?: any) => {
       if (err?.stack) {
         logger.error(`[Download Lambda] Error stack trace: ${err.stack}`);
       }
+      if (rawPayload && typeof rawPayload === 'object' && rawPayload.documentId) {
+        try {
+          const errMsg = err?.message || 'Download processing crashed';
+          await downloadWorker.handleFatalDownloadError(rawPayload, errMsg);
+        } catch (fatalErr: any) {
+          logger.error(`[Download Lambda] Failed to handle fatal download error:`, fatalErr);
+        }
+      }
     }
   }
 
@@ -128,4 +192,3 @@ export const handler = async (event: any, context?: any) => {
 export const downloadWorkerHandler = handler;
 export const sqsDownloadHandler = handler;
 export const urlDownloadHandler = handler;
-

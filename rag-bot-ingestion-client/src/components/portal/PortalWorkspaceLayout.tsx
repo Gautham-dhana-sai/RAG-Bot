@@ -1,4 +1,4 @@
-import React, { memo, useState, useCallback, useRef, useEffect } from 'react';
+import React, { memo, useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Portal, IngestionJob, IngestionJobDocument } from '../../types';
 import { useAuth } from '../../context/AuthContext';
@@ -19,6 +19,7 @@ export const PortalWorkspaceLayout: React.FC = memo(() => {
     selectedPortal,
     isLoadingPortals,
     portalDocuments,
+    portalCrawls,
     isLoadingDocuments,
     loadPortalDocuments,
     deletePortal,
@@ -74,16 +75,17 @@ export const PortalWorkspaceLayout: React.FC = memo(() => {
           setJobDocuments(job.documents);
         }
 
-        const snapshot = `${job.status}-${job.processedDocuments}-${job.failedDocuments}`;
-        if (snapshot !== prevJobSnapshotRef.current) {
-          prevJobSnapshotRef.current = snapshot;
-          loadPortalDocuments(pId);
-        }
-
         if (job.status === 'READY' || job.status === 'FAILED') {
           stopJobPolling();
           loadPortalDocuments(pId);
           loadPortals();
+        } else if (job.sourceType !== 'WEBSITE_CRAWL') {
+          // For direct file/URL uploads, reload when a user-input record updates
+          const snapshot = `${job.status}-${job.processedDocuments}-${job.failedDocuments}`;
+          if (snapshot !== prevJobSnapshotRef.current) {
+            prevJobSnapshotRef.current = snapshot;
+            loadPortalDocuments(pId);
+          }
         }
       } catch {
         // keep polling
@@ -93,6 +95,20 @@ export const PortalWorkspaceLayout: React.FC = memo(() => {
     poll();
     pollingTimerRef.current = setInterval(poll, 2500);
   }, [getClient, loadPortalDocuments, loadPortals, stopJobPolling]);
+
+  // Filter job documents to only include user-entered inputs for this session, not recursive crawl routes
+  const userSessionDocuments = useMemo(() => {
+    return jobDocuments.filter(doc => {
+      if (
+        doc.sourceType !== 'WEBSITE_CRAWL' &&
+        !doc.downloadMetadata?.crawlJobId
+      ) {
+        return true;
+      }
+      const meta = doc.downloadMetadata;
+      return meta?.depth === 0 || meta?.source === 'root';
+    });
+  }, [jobDocuments]);
 
   useEffect(() => {
     return () => {
@@ -244,6 +260,9 @@ export const PortalWorkspaceLayout: React.FC = memo(() => {
             portal={portal}
             onJobStarted={handleJobStarted}
             onDocumentsUpdated={handleDocumentsUpdated}
+            portalDocuments={portalDocuments}
+            jobDocuments={jobDocuments}
+            onRetryUrl={handleRetryUrl}
           />
 
           {/* Active Ingestion Job Status */}
@@ -256,10 +275,12 @@ export const PortalWorkspaceLayout: React.FC = memo(() => {
             />
           )}
 
-          {/* Ingestion Job Document Breakdown */}
-          {jobDocuments.length > 0 && (
+          {/* Ingestion Job Document Breakdown: Only holds records user entered in this session, not recursive crawl routes */}
+          {userSessionDocuments.length > 0 && (
             <DocumentList
-              documents={jobDocuments}
+              documents={userSessionDocuments}
+              job={currentJob}
+              crawls={portalCrawls}
               onRetryUrl={handleRetryUrl}
             />
           )}
@@ -275,6 +296,7 @@ export const PortalWorkspaceLayout: React.FC = memo(() => {
         <div className="workspace-col-side">
           <KnowledgeBaseSidebar
             documents={portalDocuments}
+            crawls={portalCrawls}
             isLoading={isLoadingDocuments}
             onReload={handleDocumentsUpdated}
           />
