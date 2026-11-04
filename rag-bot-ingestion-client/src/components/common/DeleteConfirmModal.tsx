@@ -17,34 +17,47 @@ export const DeleteConfirmModal: React.FC<DeleteConfirmModalProps> = memo(({
   if (!portal) return null;
 
   return (
-    <div className="modal-overlay" onClick={onCancel}>
-      <div className="modal-card modal-delete" onClick={e => e.stopPropagation()}>
+    <div className="modal-backdrop modal-overlay" onClick={onCancel}>
+      <div className="modal-dialog modal-card modal-delete" onClick={e => e.stopPropagation()}>
         <div className="modal-header">
-          <div className="delete-modal-title">
-            <span className="warning-icon">⚠️</span>
-            <h3>Delete Portal</h3>
-          </div>
-          <button type="button" className="btn-close" onClick={onCancel} disabled={isDeleting}>✕</button>
+          <h3>
+            <span style={{ marginRight: '0.4rem' }}>⚠️</span>
+            Delete Portal
+          </h3>
+          <button
+            type="button"
+            className="btn-close"
+            onClick={onCancel}
+            disabled={isDeleting}
+            aria-label="Close"
+          >
+            ✕
+          </button>
         </div>
 
         <div className="modal-body">
           <p>
-            Are you sure you want to delete <strong>{portal.name}</strong>?
+            Are you sure you want to permanently delete <strong>{portal.name}</strong>?
           </p>
-          <div className="delete-impact-card">
-            <p><strong>This irreversible action will permanently delete:</strong></p>
+          {(portal.portalUrl || portal.portfolioUrl) && (
+            <p className="modal-hint">
+              Portal URL: <code>{portal.portalUrl || portal.portfolioUrl}</code>
+            </p>
+          )}
+          <div className="modal-alert-box delete-impact-card">
+            <strong>This action is irreversible and will delete:</strong>
             <ul>
-              <li>The portal definition and target configuration</li>
+              <li>Portal definition and registered configuration</li>
               <li>All indexed document files and chunk metadata</li>
-              <li>All vector embeddings stored in PostgreSQL</li>
+              <li>All vector embeddings stored in PostgreSQL database</li>
             </ul>
           </div>
-          <p className="delete-subtext">
+          <p className="delete-subtext" style={{ marginTop: '0.75rem', fontSize: '0.82rem', color: '#dc2626' }}>
             Documents and knowledge base items for this portal cannot be recovered after deletion.
           </p>
         </div>
 
-        <div className="modal-actions">
+        <div className="modal-footer modal-actions">
           <button
             type="button"
             className="btn-secondary"
@@ -59,7 +72,7 @@ export const DeleteConfirmModal: React.FC<DeleteConfirmModalProps> = memo(({
             onClick={onConfirm}
             disabled={isDeleting}
           >
-            {isDeleting ? 'Deleting...' : 'Yes, Delete Portal'}
+            {isDeleting ? 'Deleting Portal...' : 'Yes, Delete Portal'}
           </button>
         </div>
       </div>
@@ -68,4 +81,3 @@ export const DeleteConfirmModal: React.FC<DeleteConfirmModalProps> = memo(({
 });
 
 DeleteConfirmModal.displayName = 'DeleteConfirmModal';
-

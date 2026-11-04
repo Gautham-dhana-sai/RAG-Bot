@@ -6,13 +6,23 @@ export interface IngestionMessagePayload {
   attempt?: number;
 }
 
+export type UrlDownloadAction =
+  | 'WEBSITE_CRAWL'
+  | 'WEBSITE_PAGE'
+  | 'crawl_coordinator'
+  | 'process_page';
+
 export interface UrlDownloadMessagePayload {
   tenantId: string;
   entityId: string;
   jobId: string;
-  documentId: string;
+  documentId?: string;
   url: string;
   portfolioUrl?: string;
+  sourceType?: 'file' | 'website' | 'website_crawl';
+  crawlJobId?: string;
+  action?: UrlDownloadAction;
+  depth?: number;
   attempt?: number;
 }
 
@@ -25,4 +35,3 @@ export interface IQueueAdapter {
   onMessage?(handler: (payload: IngestionMessagePayload) => Promise<void>): void;
   onUrlDownloadMessage?(handler: (payload: UrlDownloadMessagePayload) => Promise<void>): void;
 }
-

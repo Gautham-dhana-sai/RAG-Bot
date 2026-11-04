@@ -4,6 +4,7 @@ interface CitationItem {
   quote?: string;
   chunkId?: string;
   documentTitle?: string;
+  sourceUrl?: string;
 }
 
 interface QaCitationListProps {
@@ -24,12 +25,25 @@ export const QaCitationList: React.FC<QaCitationListProps> = memo(({ citations }
             <span className="qa-citation-badge">Ref [{cIdx + 1}]</span>
             <div className="qa-citation-details">
               {c.quote && <div className="qa-citation-quote">&quot;{c.quote}&quot;</div>}
-              {c.chunkId && (
-                <div className="qa-citation-meta">
-                  <span>Chunk: <code>{c.chunkId.substring(0, 8)}...</code></span>
-                  {c.documentTitle && <span> • Doc: {c.documentTitle}</span>}
-                </div>
-              )}
+              <div className="qa-citation-meta">
+                {c.chunkId && <span>Chunk: <code>{c.chunkId.substring(0, 8)}...</code></span>}
+                {c.documentTitle && <span>{c.chunkId ? ' • ' : ''}Doc: {c.documentTitle}</span>}
+                {c.sourceUrl && (
+                  <span>
+                    {' • '}
+                    <a
+                      href={c.sourceUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="qa-citation-url-link"
+                      title={c.sourceUrl}
+                      style={{ color: 'var(--primary, #3b82f6)', textDecoration: 'underline', fontWeight: 500 }}
+                    >
+                      🌐 Source Webpage ↗
+                    </a>
+                  </span>
+                )}
+              </div>
             </div>
           </div>
         ))}
@@ -39,4 +53,3 @@ export const QaCitationList: React.FC<QaCitationListProps> = memo(({ citations }
 });
 
 QaCitationList.displayName = 'QaCitationList';
-

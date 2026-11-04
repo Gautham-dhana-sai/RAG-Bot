@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 
-export function computeSha256(buffer: Buffer): string {
-  return crypto.createHash('sha256').update(buffer).digest('hex');
+export function computeSha256(data: Buffer | string): string {
+  return crypto.createHash('sha256').update(typeof data === 'string' ? Buffer.from(data, 'utf-8') : data).digest('hex');
 }
 
 export function generateUuid(): string {

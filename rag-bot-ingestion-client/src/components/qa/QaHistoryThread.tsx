@@ -1,18 +1,22 @@
 import React, { memo, useState } from 'react';
 import { QAHistoryItem } from '../../types';
-import { cleanDocCitationTags, formatAnswerParagraph } from '../../utils/formatters';
+import { cleanDocCitationTags, formatAnswerText } from '../../utils/formatters';
 import { QaCitationList } from './QaCitationList';
 
 interface QaHistoryThreadProps {
   history: QAHistoryItem[];
   isQuerying: boolean;
   pendingQuestion: string | null;
+  retryingItemId?: string | null;
+  onReEnquire?: (itemId: string, question: string) => void;
 }
 
 export const QaHistoryThread: React.FC<QaHistoryThreadProps> = memo(({
   history,
   isQuerying,
   pendingQuestion,
+  retryingItemId,
+  onReEnquire,
 }) => {
   const [showAllQuestions, setShowAllQuestions] = useState(false);
 
@@ -21,8 +25,8 @@ export const QaHistoryThread: React.FC<QaHistoryThreadProps> = memo(({
 
   return (
     <div className="qa-history-feed">
-      {/* Pending Query State at Top */}
-      {isQuerying && pendingQuestion && (
+      {/* Pending Query State at Top (only for new queries, not retries) */}
+      {isQuerying && pendingQuestion && !retryingItemId && (
         <div className="qa-history-thread-item qa-thread-pending">
           <div className="qa-bubble qa-question-bubble">
             <div className="qa-bubble-header">
@@ -55,6 +59,7 @@ export const QaHistoryThread: React.FC<QaHistoryThreadProps> = memo(({
         const absoluteIndex = history.findIndex(h => h.id === item.id);
         const questionNum = history.length - (absoluteIndex >= 0 ? absoluteIndex : 0);
         const isLatest = absoluteIndex === 0;
+        const isThisItemRetrying = retryingItemId === item.id;
 
         return (
           <div key={item.id} className={`qa-history-thread-item ${item.isError ? 'qa-item-error' : ''}`}>
@@ -64,31 +69,55 @@ export const QaHistoryThread: React.FC<QaHistoryThreadProps> = memo(({
                 <span className="qa-bubble-role">
                   <span className="qa-role-icon">👤</span> Question #{questionNum} {isLatest ? '(Latest)' : ''}
                 </span>
-                <span className="qa-timestamp">{item.timestamp}</span>
+                <div className="qa-bubble-header-actions" style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
+                  <span className="qa-timestamp">{item.timestamp}</span>
+                  {onReEnquire && (
+                    <button
+                      type="button"
+                      className="btn-re-enquire"
+                      onClick={() => onReEnquire(item.id, item.question)}
+                      disabled={isQuerying}
+                      title={`Re-enquire Question #${questionNum} and overwrite response`}
+                    >
+                      {isThisItemRetrying ? '⏳ Re-enquiring...' : '🔄 Re-enquire'}
+                    </button>
+                  )}
+                </div>
               </div>
               <div className="qa-bubble-body">
                 <p className="qa-question-text">{item.question}</p>
               </div>
             </div>
 
-            {/* Solution / Grounded Answer */}
-            <div className={`qa-bubble qa-solution-bubble ${item.isError ? 'qa-solution-error' : ''}`}>
-              <div className="qa-bubble-header">
-                <span className="qa-bubble-role">
-                  <span className="qa-role-icon">{item.isError ? '⚠️' : '🤖'}</span>
-                  {item.isError ? 'Retrieval Notice' : 'Solution / Grounded Answer'}
-                </span>
-              </div>
-              <div className="qa-bubble-body qa-solution-body">
-                {cleanDocCitationTags(item.answer).split('\n\n').map((paragraph, pIdx) => (
-                  <div key={pIdx} className="qa-paragraph">
-                    {formatAnswerParagraph(paragraph)}
+            {/* Solution / Grounded Answer (or In-Place Loading State if Re-enquiring) */}
+            {isThisItemRetrying ? (
+              <div className="qa-bubble qa-solution-bubble qa-loading-bubble">
+                <div className="qa-bubble-header">
+                  <span className="qa-bubble-role">
+                    <span className="qa-role-icon">🤖</span> Re-evaluating Grounded Solution for Question #{questionNum}...
+                  </span>
+                </div>
+                <div className="qa-bubble-body">
+                  <div className="qa-loading-indicator">
+                    <span className="qa-spinner-pulse"></span>
+                    <span>Re-querying vector chunks &amp; synthesizing fresh answer...</span>
                   </div>
-                ))}
-
-                <QaCitationList citations={item.citations} />
+                </div>
               </div>
-            </div>
+            ) : (
+              <div className={`qa-bubble qa-solution-bubble ${item.isError ? 'qa-solution-error' : ''}`}>
+                <div className="qa-bubble-header">
+                  <span className="qa-bubble-role">
+                    <span className="qa-role-icon">{item.isError ? '⚠️' : '🤖'}</span>
+                    {item.isError ? 'Retrieval Notice' : 'Solution / Grounded Answer'}
+                  </span>
+                </div>
+                <div className="qa-bubble-body qa-solution-body">
+                  {formatAnswerText(cleanDocCitationTags(item.answer))}
+                  <QaCitationList citations={item.citations} />
+                </div>
+              </div>
+            )}
           </div>
         );
       })}
@@ -112,4 +141,3 @@ export const QaHistoryThread: React.FC<QaHistoryThreadProps> = memo(({
 });
 
 QaHistoryThread.displayName = 'QaHistoryThread';
-

@@ -4,6 +4,8 @@ import {
   IngestionJobDocument,
   Portal,
   DocumentInfo,
+  CrawlJob,
+  StartCrawlResponse,
 } from './types';
 
 export class IngestionApiClient {
@@ -272,6 +274,189 @@ export class IngestionApiClient {
     return response.json();
   }
   submitPortfolioUrls = (ref: string, urls: string[]) => this.submitPortalUrls(ref, urls);
+
+  async submitPortalWebsites(
+    portalReference: string,
+    url: string
+  ): Promise<IngestionSubmitResponse> {
+    let response = await this.request(
+      `${this.baseUrl}/v1/portals/${encodeURIComponent(portalReference)}/websites`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url }),
+      }
+    );
+    if (!response.ok && response.status === 404) {
+      response = await this.request(
+        `${this.baseUrl}/api/ingestion/websites`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ portfolioId: portalReference, url }),
+        }
+      );
+    }
+
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err.error?.message || err.message || `Website submission failed with HTTP ${response.status}`);
+    }
+
+    return response.json();
+  }
+  submitPortfolioWebsites = (ref: string, url: string) => this.submitPortalWebsites(ref, url);
+
+  async submitWebsite(
+    portfolioId: string,
+    url: string
+  ): Promise<IngestionSubmitResponse> {
+    const response = await this.request(`${this.baseUrl}/api/ingestion/websites`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ portfolioId, url }),
+    });
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err.error?.message || err.message || `Website ingestion failed with HTTP ${response.status}`);
+    }
+    return response.json();
+  }
+
+  /**
+   * Start a multi-page website crawl for a portal
+   */
+  async startPortalCrawl(
+    portalReference: string,
+    data: { url: string; maxPages?: number; maxDepth?: number }
+  ): Promise<StartCrawlResponse> {
+    let response = await this.request(
+      `${this.baseUrl}/v1/portals/${encodeURIComponent(portalReference)}/crawls`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      }
+    );
+    if (!response.ok && response.status === 404) {
+      response = await this.request(
+        `${this.baseUrl}/v1/portfolios/${encodeURIComponent(portalReference)}/crawls`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(data),
+        }
+      );
+    }
+    if (!response.ok && response.status === 404) {
+      response = await this.request(
+        `${this.baseUrl}/api/ingestion/websites/crawls`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ portfolioId: portalReference, ...data }),
+        }
+      );
+    }
+
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err.error?.message || err.message || `Crawl request failed with HTTP ${response.status}`);
+    }
+
+    return response.json();
+  }
+  startPortfolioCrawl = (ref: string, data: any) => this.startPortalCrawl(ref, data);
+
+  /**
+   * Get crawl job details with discovered pages breakdown
+   */
+  async getPortalCrawl(portalReference: string, crawlJobId: string): Promise<CrawlJob> {
+    let response = await this.request(
+      `${this.baseUrl}/v1/portals/${encodeURIComponent(portalReference)}/crawls/${encodeURIComponent(crawlJobId)}`,
+      { method: 'GET' }
+    );
+    if (!response.ok && response.status === 404) {
+      response = await this.request(
+        `${this.baseUrl}/v1/portfolios/${encodeURIComponent(portalReference)}/crawls/${encodeURIComponent(crawlJobId)}`,
+        { method: 'GET' }
+      );
+    }
+    if (!response.ok && response.status === 404) {
+      response = await this.request(
+        `${this.baseUrl}/api/ingestion/websites/crawls/${encodeURIComponent(crawlJobId)}?portfolioId=${encodeURIComponent(portalReference)}`,
+        { method: 'GET' }
+      );
+    }
+
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err.error?.message || err.message || `Failed to fetch crawl job`);
+    }
+
+    return response.json();
+  }
+  getPortfolioCrawl = (ref: string, id: string) => this.getPortalCrawl(ref, id);
+
+  /**
+   * List website crawl jobs for a portal
+   */
+  async listPortalCrawls(portalReference: string): Promise<CrawlJob[]> {
+    let response = await this.request(
+      `${this.baseUrl}/v1/portals/${encodeURIComponent(portalReference)}/crawls`,
+      { method: 'GET' }
+    );
+    if (!response.ok && response.status === 404) {
+      response = await this.request(
+        `${this.baseUrl}/v1/portfolios/${encodeURIComponent(portalReference)}/crawls`,
+        { method: 'GET' }
+      );
+    }
+
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err.error?.message || err.message || `Failed to list crawls`);
+    }
+
+    return response.json();
+  }
+  listPortfolioCrawls = (ref: string) => this.listPortalCrawls(ref);
+
+  /**
+   * Retry failed or skipped pages within a crawl job
+   */
+  async retryPortalCrawl(
+    portalReference: string,
+    crawlJobId: string,
+    pageUrl?: string
+  ): Promise<{ message: string; retriedCount: number }> {
+    let response = await this.request(
+      `${this.baseUrl}/v1/portals/${encodeURIComponent(portalReference)}/crawls/${encodeURIComponent(crawlJobId)}/retry`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pageUrl }),
+      }
+    );
+    if (!response.ok && response.status === 404) {
+      response = await this.request(
+        `${this.baseUrl}/v1/portfolios/${encodeURIComponent(portalReference)}/crawls/${encodeURIComponent(crawlJobId)}/retry`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pageUrl }),
+        }
+      );
+    }
+
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err.error?.message || err.message || `Crawl retry failed`);
+    }
+
+    return response.json();
+  }
+  retryPortfolioCrawl = (ref: string, id: string, pageUrl?: string) => this.retryPortalCrawl(ref, id, pageUrl);
 
   async getPortalJobStatus(
     portalReference: string,

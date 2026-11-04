@@ -17,6 +17,7 @@ export const QaVerificationCard: React.FC<QaVerificationCardProps> = memo(({
   const [queryText, setQueryText] = useState('What is this portal about and what are its key benefits?');
   const [isQuerying, setIsQuerying] = useState(false);
   const [pendingQuestion, setPendingQuestion] = useState<string | null>(null);
+  const [retryingItemId, setRetryingItemId] = useState<string | null>(null);
 
   const [qaHistory, setQaHistory] = useState<QAHistoryItem[]>(() => {
     try {
@@ -86,6 +87,54 @@ export const QaVerificationCard: React.FC<QaVerificationCardProps> = memo(({
     }
   };
 
+  const handleReEnquire = useCallback(async (itemId: string, questionToAsk: string) => {
+    if (!portal || !questionToAsk || isQuerying || retryingItemId) return;
+
+    setRetryingItemId(itemId);
+    setIsQuerying(true);
+
+    try {
+      const client = getClient();
+      const res = await client.askQuestion(
+        portal.tenantId || '',
+        portal.id,
+        questionToAsk
+      );
+
+      const itemTimestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+      setQaHistory(prev => prev.map(item => {
+        if (item.id === itemId) {
+          return {
+            ...item,
+            answer: cleanDocCitationTags(res.answer),
+            citations: res.citations || [],
+            timestamp: itemTimestamp,
+            isError: false,
+          };
+        }
+        return item;
+      }));
+    } catch (err: any) {
+      const itemTimestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      setQaHistory(prev => prev.map(item => {
+        if (item.id === itemId) {
+          return {
+            ...item,
+            answer: `Query error: ${err.message || 'Failed to generate answer'}`,
+            citations: [],
+            timestamp: itemTimestamp,
+            isError: true,
+          };
+        }
+        return item;
+      }));
+    } finally {
+      setIsQuerying(false);
+      setRetryingItemId(null);
+    }
+  }, [portal, getClient, isQuerying, retryingItemId]);
+
   const handleClearHistory = useCallback(() => {
     setQaHistory(prev => prev.filter(item => item.portalId !== portal.id && item.portfolioId !== portal.id));
   }, [portal.id]);
@@ -105,7 +154,7 @@ export const QaVerificationCard: React.FC<QaVerificationCardProps> = memo(({
         <div>
           <h3>Verify Portal Retrieval</h3>
           <p className="form-hint">
-            Ask questions against indexed documents to verify semantic retrieval and grounded answer synthesis.
+            Ask questions against indexed knowledge sources to verify semantic retrieval and grounded answer synthesis.
           </p>
         </div>
         {portalHistory.length > 0 && (
@@ -178,10 +227,11 @@ export const QaVerificationCard: React.FC<QaVerificationCardProps> = memo(({
         history={portalHistory}
         isQuerying={isQuerying}
         pendingQuestion={pendingQuestion}
+        retryingItemId={retryingItemId}
+        onReEnquire={handleReEnquire}
       />
     </div>
   );
 });
 
 QaVerificationCard.displayName = 'QaVerificationCard';
-

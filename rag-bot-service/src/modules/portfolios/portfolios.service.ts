@@ -278,6 +278,7 @@ export class PortfoliosService {
             chunkId: sc.chunk.id,
             documentId: sc.document.id,
             documentTitle: sc.document.originalFilename,
+            sourceUrl: sc.chunk.metadata?.sourceUrl || sc.chunk.metadata?.canonicalUrl || (sc.document as any)?.sourceUrl,
             pageNumber: sc.chunk.pageNumber || 1,
             snippet: sc.chunk.chunkText.length > 300 ? sc.chunk.chunkText.substring(0, 300) + '...' : sc.chunk.chunkText,
             quote: sc.chunk.chunkText.length > 180 ? sc.chunk.chunkText.substring(0, 180) + '...' : sc.chunk.chunkText,
@@ -302,7 +303,6 @@ export class PortfoliosService {
         .replace(/\(\s*$/g, '')
         .replace(/[ \t]+([.,!?;:])/g, '$1')
         .replace(/[^\S\r\n]{2,}/g, ' ')
-        .replace(/([^\n])\s*([•*]|\s-\s)\s*/g, '$1\n• ')
         .replace(/\n{3,}/g, '\n\n')
         .trim();
 
@@ -353,6 +353,7 @@ export class PortfoliosService {
     };
   }
 
+
   /**
    * Submit document and image URLs for asynchronous download and ingestion.
    */
@@ -375,6 +376,28 @@ export class PortfoliosService {
   }
 
   /**
+   * Submit website URLs for static HTML extraction and vector ingestion.
+   */
+  async submitWebsiteIngestionJob(
+    auth: AuthContext,
+    portfolioReference: string,
+    urls: string[]
+  ): Promise<any> {
+    const { tenantId, entity } = await this.resolvePortfolio(auth, portfolioReference);
+    const res = await this.ingestionService.submitWebsiteIngestionJob({
+      tenantId,
+      entityId: entity.id,
+      urls,
+      portfolioUrl: entity.portfolioUrl || entity.slug,
+    });
+    return {
+      id: res.jobId,
+      ...res,
+    };
+  }
+
+
+  /**
    * Get ingestion job status for a portfolio
    */
   async getJobStatus(
@@ -384,6 +407,28 @@ export class PortfoliosService {
   ): Promise<any> {
     const { tenantId, entity } = await this.resolvePortfolio(auth, portfolioReference);
     const job = await this.ingestionService.getJob(tenantId, entity.id, jobId);
+
+    // If website crawl, dynamically synchronize state with crawl job progress
+    if (job.sourceType === 'WEBSITE_CRAWL' && this.db.syncCrawlJobAggregates) {
+      try {
+        const crawl = await this.db.syncCrawlJobAggregates(tenantId, jobId);
+        if (crawl) {
+          job.totalDocuments = Math.max(job.totalDocuments, crawl.discoveredCount || 0);
+          job.processedDocuments = crawl.completedCount || 0;
+          job.failedDocuments = crawl.failedCount || 0;
+          if (crawl.status === 'completed') {
+            job.status = 'READY';
+          } else if (crawl.status === 'failed') {
+            job.status = 'FAILED';
+          } else if (crawl.status === 'discovering' || crawl.status === 'processing_pages') {
+            job.status = 'PROCESSING';
+          }
+        }
+      } catch (err: any) {
+        logger.warn(`Could not sync crawl aggregates for job ${jobId}: ${err.message}`);
+      }
+    }
+
     const documents = await this.ingestionService.getJobDocuments(tenantId, entity.id, jobId);
     return {
       id: job.id,
@@ -391,6 +436,7 @@ export class PortfoliosService {
       tenantId: job.tenantId,
       entityId: job.entityId,
       status: job.status,
+      sourceType: job.sourceType,
       totalDocuments: job.totalDocuments,
       processedDocuments: job.processedDocuments,
       failedDocuments: job.failedDocuments,
@@ -441,6 +487,77 @@ export class PortfoliosService {
       success: true,
       message: `Portal "${entity.name}" and all associated documents were deleted successfully.`,
     };
+  }
+
+  /**
+   * Start a multi-page website crawl for a portfolio
+   */
+  async startWebsiteCrawl(
+    auth: AuthContext,
+    portfolioReference: string,
+    data: { url: string; maxPages?: number; maxDepth?: number }
+  ): Promise<any> {
+    const { tenantId, entity } = await this.resolvePortfolio(auth, portfolioReference);
+    return this.ingestionService.startWebsiteCrawl({
+      tenantId,
+      entityId: entity.id,
+      url: data.url,
+      portfolioUrl: entity.portfolioUrl || entity.slug,
+      config: {
+        maxPages: data.maxPages,
+        maxDepth: data.maxDepth,
+      },
+    });
+  }
+
+  /**
+   * Get a crawl job by ID with all discovered crawl pages
+   */
+  async getCrawlJob(
+    auth: AuthContext,
+    portfolioReference: string,
+    crawlJobId: string
+  ): Promise<any> {
+    const { tenantId, entity } = await this.resolvePortfolio(auth, portfolioReference);
+    const crawlJob = await this.db.getCrawlJob(tenantId, entity.id, crawlJobId);
+    if (!crawlJob) {
+      throw new NotFoundError('Crawl Job', crawlJobId);
+    }
+    const pages = await this.db.getCrawlPages(tenantId, crawlJobId);
+    return {
+      ...crawlJob,
+      pages,
+    };
+  }
+
+  /**
+   * List all crawl jobs for a portfolio
+   */
+  async listCrawlJobs(
+    auth: AuthContext,
+    portfolioReference: string
+  ): Promise<any> {
+    const { tenantId, entity } = await this.resolvePortfolio(auth, portfolioReference);
+    return this.db.listCrawlJobs(tenantId, entity.id);
+  }
+
+  /**
+   * Retry failed or skipped pages within a crawl job
+   */
+  async retryCrawlJob(
+    auth: AuthContext,
+    portfolioReference: string,
+    crawlJobId: string,
+    pageUrl?: string
+  ): Promise<any> {
+    const { tenantId, entity } = await this.resolvePortfolio(auth, portfolioReference);
+    return this.ingestionService.retryCrawlJob({
+      tenantId,
+      entityId: entity.id,
+      crawlJobId,
+      pageUrl,
+      portfolioUrl: entity.portfolioUrl || entity.slug,
+    });
   }
 }
 

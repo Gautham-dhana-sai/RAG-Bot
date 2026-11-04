@@ -18,6 +18,9 @@ import {
   Message,
   AnswerCitation,
   ScoredChunk,
+  CrawlJob,
+  CrawlPage,
+  CrawlConfig,
 } from '../../types/index.js';
 import { logger } from '../../shared/logger.js';
 import { generateUuid } from '../../shared/utils.js';
@@ -513,7 +516,18 @@ export class PostgresDatabaseAdapter implements IDatabaseAdapter {
   async getDocumentsByEntity(tenantId: string, entityId: string): Promise<Document[]> {
     if (!isValidUuid(tenantId) || !isValidUuid(entityId)) return [];
     const res = await this.pool.query(
-      'SELECT * FROM documents WHERE tenant_id = $1 AND entity_id = $2 ORDER BY created_at DESC',
+      `SELECT d.*, jd.source_url, jd.stage,
+              COALESCE(d.source_type, j.source_type, CASE WHEN jd.source_url IS NOT NULL THEN 'URL_IMPORT' ELSE 'DIRECT_UPLOAD' END) AS effective_source_type
+       FROM documents d
+       LEFT JOIN LATERAL (
+         SELECT source_url, stage, job_id
+         FROM ingestion_job_documents
+         WHERE document_id = d.id AND tenant_id = d.tenant_id
+         ORDER BY created_at DESC LIMIT 1
+       ) jd ON TRUE
+       LEFT JOIN ingestion_jobs j ON j.id = jd.job_id
+       WHERE d.tenant_id = $1 AND d.entity_id = $2
+       ORDER BY d.created_at DESC`,
       [tenantId, entityId]
     );
     return res.rows.map(r => ({
@@ -528,6 +542,9 @@ export class PostgresDatabaseAdapter implements IDatabaseAdapter {
       isPublic: r.is_public,
       status: r.status,
       errorMessage: r.error_message,
+      sourceUrl: r.source_url || undefined,
+      stage: r.stage || undefined,
+      sourceType: r.effective_source_type || r.source_type || 'DIRECT_UPLOAD',
       createdAt: r.created_at,
       updatedAt: r.updated_at,
     }));
@@ -535,8 +552,16 @@ export class PostgresDatabaseAdapter implements IDatabaseAdapter {
 
   async getDocumentCountByEntity(tenantId: string, entityId: string): Promise<number> {
     if (!isValidUuid(tenantId) || !isValidUuid(entityId)) return 0;
+    // Count user inputs only: directly uploaded files/links + distinct website crawls (excluding child/extended routes)
     const res = await this.pool.query(
-      'SELECT COUNT(*)::int AS count FROM documents WHERE tenant_id = $1 AND entity_id = $2',
+      `SELECT 
+         (SELECT COUNT(*)::int FROM documents WHERE tenant_id = $1 AND entity_id = $2 AND (source_type IS NULL OR source_type != 'WEBSITE_CRAWL'))
+         +
+         GREATEST(
+           (SELECT COUNT(*)::int FROM crawl_jobs WHERE tenant_id = $1 AND entity_id = $2),
+           CASE WHEN EXISTS(SELECT 1 FROM documents WHERE tenant_id = $1 AND entity_id = $2 AND source_type = 'WEBSITE_CRAWL') THEN 1 ELSE 0 END
+         )
+       AS count`,
       [tenantId, entityId]
     );
     return res.rows[0]?.count ? Number(res.rows[0].count) : 0;
@@ -553,13 +578,16 @@ export class PostgresDatabaseAdapter implements IDatabaseAdapter {
     objectKey: string;
     isPublic?: boolean;
     status?: Document['status'];
+    sourceType?: string;
   }): Promise<Document> {
     const id = data.id && isValidUuid(data.id) ? data.id : generateUuid();
+    const sourceType = data.sourceType || 'DIRECT_UPLOAD';
     const res = await this.pool.query(
-      `INSERT INTO documents (id, tenant_id, entity_id, original_filename, mime_type, size_bytes, content_hash, object_key, is_public, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      `INSERT INTO documents (id, tenant_id, entity_id, original_filename, mime_type, size_bytes, content_hash, object_key, is_public, status, source_type)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
        ON CONFLICT (entity_id, content_hash) DO UPDATE SET
          original_filename = EXCLUDED.original_filename,
+         source_type = COALESCE(EXCLUDED.source_type, documents.source_type),
          updated_at = NOW()
        RETURNING *`,
       [
@@ -573,6 +601,7 @@ export class PostgresDatabaseAdapter implements IDatabaseAdapter {
         data.objectKey,
         data.isPublic ?? false,
         data.status || 'PENDING',
+        sourceType,
       ]
     );
     const r = res.rows[0];
@@ -587,6 +616,7 @@ export class PostgresDatabaseAdapter implements IDatabaseAdapter {
       objectKey: r.object_key,
       isPublic: r.is_public,
       status: r.status,
+      sourceType: r.source_type || sourceType,
       errorMessage: r.error_message,
       createdAt: r.created_at,
       updatedAt: r.updated_at,
@@ -871,6 +901,469 @@ export class PostgresDatabaseAdapter implements IDatabaseAdapter {
     };
   }
 
+
+  // Crawl Jobs & Pages
+  async createCrawlJob(data: {
+    id?: string;
+    tenantId: string;
+    entityId: string;
+    rootUrl: string;
+    config?: CrawlConfig;
+  }): Promise<CrawlJob> {
+    const id = data.id && isValidUuid(data.id) ? data.id : generateUuid();
+    const config = data.config || {};
+    const res = await this.pool.query(
+      `INSERT INTO crawl_jobs (id, tenant_id, entity_id, root_url, config, status)
+       VALUES ($1, $2, $3, $4, $5, 'queued')
+       RETURNING *`,
+      [id, data.tenantId, data.entityId, data.rootUrl, JSON.stringify(config)]
+    );
+    return this.mapCrawlJobRow(res.rows[0]);
+  }
+
+  async getCrawlJob(tenantId: string, entityId: string, crawlJobId: string): Promise<CrawlJob | null> {
+    if (!isValidUuid(tenantId) || !isValidUuid(entityId) || !isValidUuid(crawlJobId)) return null;
+    await this.syncCrawlJobAggregates(tenantId, crawlJobId);
+    const res = await this.pool.query(
+      `SELECT * FROM crawl_jobs WHERE tenant_id = $1 AND entity_id = $2 AND id = $3`,
+      [tenantId, entityId, crawlJobId]
+    );
+    if (res.rows.length === 0) return null;
+    return this.mapCrawlJobRow(res.rows[0]);
+  }
+
+  async listCrawlJobs(tenantId: string, entityId: string): Promise<CrawlJob[]> {
+    if (!isValidUuid(tenantId) || !isValidUuid(entityId)) return [];
+    const res = await this.pool.query(
+      `SELECT * FROM crawl_jobs WHERE tenant_id = $1 AND entity_id = $2 ORDER BY created_at DESC`,
+      [tenantId, entityId]
+    );
+    const jobs = res.rows.map(r => this.mapCrawlJobRow(r));
+    for (let i = 0; i < jobs.length; i++) {
+      if (jobs[i].status === 'processing_pages' || jobs[i].status === 'queued') {
+        const synced = await this.syncCrawlJobAggregates(tenantId, jobs[i].id);
+        if (synced) {
+          jobs[i] = synced;
+        }
+      }
+    }
+    return jobs;
+  }
+
+  async updateCrawlJob(tenantId: string, crawlJobId: string, updates: Partial<CrawlJob>): Promise<void> {
+    if (!isValidUuid(tenantId) || !isValidUuid(crawlJobId)) return;
+    const setClauses: string[] = ['updated_at = NOW()'];
+    const values: any[] = [tenantId, crawlJobId];
+
+    if (updates.status !== undefined) {
+      values.push(updates.status);
+      setClauses.push(`status = $${values.length}`);
+    }
+    if (updates.discoveredCount !== undefined) {
+      values.push(updates.discoveredCount);
+      setClauses.push(`discovered_count = $${values.length}`);
+    }
+    if (updates.queuedCount !== undefined) {
+      values.push(updates.queuedCount);
+      setClauses.push(`queued_count = $${values.length}`);
+    }
+    if (updates.processingCount !== undefined) {
+      values.push(updates.processingCount);
+      setClauses.push(`processing_count = $${values.length}`);
+    }
+    if (updates.completedCount !== undefined) {
+      values.push(updates.completedCount);
+      setClauses.push(`completed_count = $${values.length}`);
+    }
+    if (updates.failedCount !== undefined) {
+      values.push(updates.failedCount);
+      setClauses.push(`failed_count = $${values.length}`);
+    }
+    if (updates.skippedCount !== undefined) {
+      values.push(updates.skippedCount);
+      setClauses.push(`skipped_count = $${values.length}`);
+    }
+    if (updates.errorSummary !== undefined) {
+      values.push(updates.errorSummary);
+      setClauses.push(`error_summary = $${values.length}`);
+    }
+    if (updates.completedAt !== undefined) {
+      values.push(updates.completedAt);
+      setClauses.push(`completed_at = $${values.length}`);
+    } else if (updates.status === 'completed' || updates.status === 'completed_with_errors' || updates.status === 'failed') {
+      setClauses.push(`completed_at = NOW()`);
+    }
+
+    await this.pool.query(
+      `UPDATE crawl_jobs SET ${setClauses.join(', ')} WHERE tenant_id = $1 AND id = $2`,
+      values
+    );
+  }
+
+  async createCrawlPages(pages: Array<{
+    tenantId: string;
+    entityId: string;
+    crawlJobId: string;
+    documentId?: string;
+    originalUrl: string;
+    normalizedUrl: string;
+    depth?: number;
+  }>): Promise<CrawlPage[]> {
+    const results: CrawlPage[] = [];
+    for (const p of pages) {
+      if (!isValidUuid(p.tenantId) || !isValidUuid(p.crawlJobId)) continue;
+      const id = generateUuid();
+      const res = await this.pool.query(
+        `INSERT INTO crawl_pages (id, tenant_id, entity_id, crawl_job_id, document_id, original_url, normalized_url, depth, status, stage)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'discovered', 'DISCOVERED')
+         ON CONFLICT (crawl_job_id, normalized_url) DO UPDATE SET
+           document_id = COALESCE(EXCLUDED.document_id, crawl_pages.document_id),
+           updated_at = NOW()
+         RETURNING *`,
+        [id, p.tenantId, p.entityId, p.crawlJobId, p.documentId || null, p.originalUrl, p.normalizedUrl, p.depth || 0]
+      );
+      results.push(this.mapCrawlPageRow(res.rows[0]));
+    }
+    return results;
+  }
+
+  async getCrawlPages(tenantId: string, crawlJobId: string): Promise<CrawlPage[]> {
+    if (!isValidUuid(tenantId) || !isValidUuid(crawlJobId)) return [];
+    await this.syncCrawlJobAggregates(tenantId, crawlJobId);
+    const res = await this.pool.query(
+      `SELECT * FROM crawl_pages WHERE tenant_id = $1 AND crawl_job_id = $2 ORDER BY depth ASC, created_at ASC`,
+      [tenantId, crawlJobId]
+    );
+    return res.rows.map(r => this.mapCrawlPageRow(r));
+  }
+
+  async getCrawlPageByUrl(tenantId: string, crawlJobId: string, normalizedUrl: string): Promise<CrawlPage | null> {
+    if (!isValidUuid(tenantId) || !isValidUuid(crawlJobId)) return null;
+    const res = await this.pool.query(
+      `SELECT * FROM crawl_pages WHERE tenant_id = $1 AND crawl_job_id = $2 AND normalized_url = $3 LIMIT 1`,
+      [tenantId, crawlJobId, normalizedUrl]
+    );
+    if (res.rows.length === 0) return null;
+    return this.mapCrawlPageRow(res.rows[0]);
+  }
+
+  async updateCrawlPage(tenantId: string, crawlJobId: string, pageIdOrUrl: string, updates: Partial<CrawlPage>): Promise<void> {
+    if (!isValidUuid(tenantId) || !isValidUuid(crawlJobId)) return;
+    const isUuid = isValidUuid(pageIdOrUrl);
+    const cleanUrl = typeof pageIdOrUrl === 'string' ? pageIdOrUrl.replace(/\/+$/, '') : pageIdOrUrl;
+    const setClauses: string[] = ['updated_at = NOW()'];
+    const values: any[] = [tenantId, crawlJobId, isUuid ? pageIdOrUrl : cleanUrl];
+
+    if (updates.status !== undefined) {
+      values.push(updates.status);
+      setClauses.push(`status = $${values.length}`);
+    }
+    if (updates.stage !== undefined) {
+      values.push(updates.stage);
+      setClauses.push(`stage = $${values.length}`);
+    }
+    if (updates.documentId !== undefined) {
+      values.push(updates.documentId);
+      setClauses.push(`document_id = $${values.length}`);
+    }
+    if (updates.title !== undefined) {
+      values.push(updates.title);
+      setClauses.push(`title = $${values.length}`);
+    }
+    if (updates.canonicalUrl !== undefined) {
+      values.push(updates.canonicalUrl);
+      setClauses.push(`canonical_url = $${values.length}`);
+    }
+    if (updates.contentHash !== undefined) {
+      values.push(updates.contentHash);
+      setClauses.push(`content_hash = $${values.length}`);
+    }
+    if (updates.objectKey !== undefined) {
+      values.push(updates.objectKey);
+      setClauses.push(`object_key = $${values.length}`);
+    }
+    if (updates.sizeBytes !== undefined) {
+      values.push(updates.sizeBytes);
+      setClauses.push(`size_bytes = $${values.length}`);
+    }
+    if (updates.errorMessage !== undefined) {
+      values.push(updates.errorMessage);
+      setClauses.push(`error_message = $${values.length}`);
+    }
+    if (updates.retryCount !== undefined) {
+      values.push(updates.retryCount);
+      setClauses.push(`retry_count = $${values.length}`);
+    }
+    if (updates.status === 'completed' || updates.status === 'skipped' || updates.status === 'failed') {
+      setClauses.push(`completed_at = NOW()`);
+    }
+
+    const idClause = isUuid ? 'id = $3' : 'normalized_url = $3';
+
+    await this.pool.query(
+      `UPDATE crawl_pages SET ${setClauses.join(', ')} WHERE tenant_id = $1 AND crawl_job_id = $2 AND ${idClause}`,
+      values
+    );
+  }
+
+  async getCrawlPageByDocumentId(tenantId: string, documentId: string): Promise<CrawlPage | null> {
+    if (!isValidUuid(tenantId) || !isValidUuid(documentId)) return null;
+    const res = await this.pool.query(
+      `SELECT * FROM crawl_pages WHERE tenant_id = $1 AND document_id = $2 ORDER BY created_at DESC LIMIT 1`,
+      [tenantId, documentId]
+    );
+    if (res.rows.length === 0) return null;
+    return this.mapCrawlPageRow(res.rows[0]);
+  }
+
+  async syncCrawlJobAggregates(tenantId: string, crawlJobId: string): Promise<CrawlJob | null> {
+    if (!isValidUuid(tenantId) || !isValidUuid(crawlJobId)) return null;
+
+    // 1. Authoritative status reconciliation: Sync crawl_pages with downstream document statuses
+    await this.pool.query(
+      `UPDATE crawl_pages cp
+       SET status = 'completed', stage = 'READY', completed_at = COALESCE(cp.completed_at, NOW()), updated_at = NOW()
+       FROM documents d
+       WHERE cp.tenant_id = $1 AND cp.crawl_job_id = $2
+         AND cp.document_id = d.id
+         AND d.status = 'READY'
+         AND cp.status != 'completed'`,
+      [tenantId, crawlJobId]
+    );
+
+    await this.pool.query(
+      `UPDATE crawl_pages cp
+       SET status = 'failed', stage = 'FAILED', error_message = COALESCE(cp.error_message, d.error_message, 'Document ingestion failed'), completed_at = COALESCE(cp.completed_at, NOW()), updated_at = NOW()
+       FROM documents d
+       WHERE cp.tenant_id = $1 AND cp.crawl_job_id = $2
+         AND cp.document_id = d.id
+         AND d.status = 'FAILED'
+         AND cp.status != 'failed' AND cp.status != 'skipped'`,
+      [tenantId, crawlJobId]
+    );
+
+    // Auto-heal stale pages: If a page has been stuck in fetching/extracting for > 5 minutes, mark failed so crawl is never trapped
+    await this.pool.query(
+      `UPDATE crawl_pages
+       SET status = 'failed', stage = 'FAILED', error_message = 'Page processing timed out (worker terminated unexpectedly)', completed_at = NOW(), updated_at = NOW()
+       WHERE tenant_id = $1 AND crawl_job_id = $2
+         AND status IN ('fetching', 'extracting')
+         AND updated_at < NOW() - INTERVAL '5 minutes'`,
+      [tenantId, crawlJobId]
+    );
+
+    // Auto-heal stale uploaded pages: If markdown was uploaded to storage > 5 mins ago, reconcile to completed
+    await this.pool.query(
+      `UPDATE crawl_pages cp
+       SET status = 'completed', stage = 'READY', completed_at = COALESCE(cp.completed_at, NOW()), updated_at = NOW()
+       WHERE cp.tenant_id = $1 AND cp.crawl_job_id = $2
+         AND cp.status = 'uploaded'
+         AND cp.object_key IS NOT NULL
+         AND cp.updated_at < NOW() - INTERVAL '5 minutes'`,
+      [tenantId, crawlJobId]
+    );
+
+    const countRes = await this.pool.query(
+      `SELECT
+         COUNT(*)::int AS total,
+         COUNT(*) FILTER (WHERE status = 'queued' OR status = 'discovered')::int AS queued,
+         COUNT(*) FILTER (WHERE status IN ('fetching', 'extracting', 'uploaded', 'ingesting'))::int AS processing,
+         COUNT(*) FILTER (WHERE status = 'completed')::int AS completed,
+         COUNT(*) FILTER (WHERE status = 'failed')::int AS failed,
+         COUNT(*) FILTER (WHERE status = 'skipped')::int AS skipped
+       FROM crawl_pages
+       WHERE tenant_id = $1 AND crawl_job_id = $2`,
+      [tenantId, crawlJobId]
+    );
+
+    const counts = countRes.rows[0] || {};
+    const total = Number(counts.total) || 0;
+    const queued = Number(counts.queued) || 0;
+    const processing = Number(counts.processing) || 0;
+    const completed = Number(counts.completed) || 0;
+    const failed = Number(counts.failed) || 0;
+    const skipped = Number(counts.skipped) || 0;
+
+    const jobRes = await this.pool.query(
+      `SELECT * FROM crawl_jobs WHERE tenant_id = $1 AND id = $2`,
+      [tenantId, crawlJobId]
+    );
+    if (jobRes.rows.length === 0) return null;
+    const currentJob = this.mapCrawlJobRow(jobRes.rows[0]);
+
+    let newStatus = currentJob.status;
+    const isTerminal =
+      currentJob.status === 'completed' ||
+      currentJob.status === 'completed_with_errors' ||
+      currentJob.status === 'failed' ||
+      currentJob.status === 'cancelled';
+
+    if (!isTerminal && currentJob.status !== 'discovering') {
+      if (queued > 0 || processing > 0) {
+        newStatus = 'processing_pages';
+      } else if (total > 0 && queued === 0 && processing === 0) {
+        if (failed === total) {
+          newStatus = 'failed';
+        } else {
+          newStatus = 'completed';
+        }
+      }
+    }
+
+    const completedAtClause =
+      newStatus === 'completed' || newStatus === 'completed_with_errors' || newStatus === 'failed'
+        ? `, completed_at = COALESCE(completed_at, NOW())`
+        : '';
+
+    const updateRes = await this.pool.query(
+      `UPDATE crawl_jobs
+       SET
+         discovered_count = $1,
+         queued_count = $2,
+         processing_count = $3,
+         completed_count = $4,
+         failed_count = $5,
+         skipped_count = $6,
+         status = $7,
+         updated_at = NOW()
+         ${completedAtClause}
+       WHERE tenant_id = $8 AND id = $9
+       RETURNING *`,
+      [total, queued, processing, completed, failed, skipped, newStatus, tenantId, crawlJobId]
+    );
+
+    // 2. Synchronize the paired ingestion_jobs record so Ingestion Job Status tracks crawl lifecycle
+    let ingestionJobStatus: string = 'PROCESSING';
+    if (newStatus === 'completed') {
+      ingestionJobStatus = 'READY';
+    } else if (newStatus === 'failed') {
+      ingestionJobStatus = 'FAILED';
+    } else if (newStatus === 'discovering' || newStatus === 'processing_pages') {
+      ingestionJobStatus = 'PROCESSING';
+    }
+
+    await this.pool.query(
+      `UPDATE ingestion_jobs
+       SET
+         total_documents = GREATEST(total_documents, $1),
+         processed_documents = $2,
+         failed_documents = $3,
+         status = $4,
+         updated_at = NOW()
+       WHERE tenant_id = $5 AND id = $6`,
+      [total, completed, failed, ingestionJobStatus, tenantId, crawlJobId]
+    );
+
+    // 3. Synchronize the root job document so Document Ingestion Breakdown does not prematurely show READY
+    if (newStatus !== 'completed' && newStatus !== 'failed') {
+      await this.pool.query(
+        `UPDATE ingestion_job_documents
+         SET status = 'PROCESSING',
+             stage = CASE WHEN $1 = 'discovering' THEN 'FETCHING_PAGE' ELSE 'PROCESSING' END,
+             updated_at = NOW()
+         WHERE tenant_id = $2 AND job_id = $3
+           AND (download_metadata->>'depth' = '0' OR download_metadata->>'source' = 'root')`,
+        [newStatus, tenantId, crawlJobId]
+      );
+    } else if (newStatus === 'completed') {
+      await this.pool.query(
+        `UPDATE ingestion_job_documents
+         SET status = 'READY', stage = 'READY', updated_at = NOW()
+         WHERE tenant_id = $1 AND job_id = $2
+           AND (download_metadata->>'depth' = '0' OR download_metadata->>'source' = 'root')`,
+        [tenantId, crawlJobId]
+      );
+    } else if (newStatus === 'failed') {
+      await this.pool.query(
+        `UPDATE ingestion_job_documents
+         SET status = 'FAILED', stage = 'FAILED', updated_at = NOW()
+         WHERE tenant_id = $1 AND job_id = $2
+           AND (download_metadata->>'depth' = '0' OR download_metadata->>'source' = 'root')`,
+        [tenantId, crawlJobId]
+      );
+    }
+
+    return updateRes.rows[0] ? this.mapCrawlJobRow(updateRes.rows[0]) : null;
+  }
+
+  async incrementCrawlCounters(tenantId: string, crawlJobId: string, increments: {
+    discovered?: number;
+    queued?: number;
+    processing?: number;
+    completed?: number;
+    failed?: number;
+    skipped?: number;
+  }): Promise<void> {
+    if (!isValidUuid(tenantId) || !isValidUuid(crawlJobId)) return;
+    await this.pool.query(
+      `UPDATE crawl_jobs SET
+         discovered_count = discovered_count + $1,
+         queued_count = queued_count + $2,
+         processing_count = processing_count + $3,
+         completed_count = completed_count + $4,
+         failed_count = failed_count + $5,
+         skipped_count = skipped_count + $6,
+         updated_at = NOW()
+       WHERE tenant_id = $7 AND id = $8`,
+      [
+        increments.discovered || 0,
+        increments.queued || 0,
+        increments.processing || 0,
+        increments.completed || 0,
+        increments.failed || 0,
+        increments.skipped || 0,
+        tenantId,
+        crawlJobId,
+      ]
+    );
+  }
+
+  private mapCrawlJobRow(r: any): CrawlJob {
+    return {
+      id: r.id,
+      tenantId: r.tenant_id,
+      entityId: r.entity_id,
+      rootUrl: r.root_url,
+      status: r.status,
+      config: typeof r.config === 'string' ? JSON.parse(r.config) : r.config || {},
+      discoveredCount: Number(r.discovered_count || 0),
+      queuedCount: Number(r.queued_count || 0),
+      processingCount: Number(r.processing_count || 0),
+      completedCount: Number(r.completed_count || 0),
+      failedCount: Number(r.failed_count || 0),
+      skippedCount: Number(r.skipped_count || 0),
+      errorSummary: r.error_summary || undefined,
+      createdAt: r.created_at,
+      updatedAt: r.updated_at,
+      completedAt: r.completed_at || undefined,
+    };
+  }
+
+  private mapCrawlPageRow(r: any): CrawlPage {
+    return {
+      id: r.id,
+      tenantId: r.tenant_id,
+      entityId: r.entity_id,
+      crawlJobId: r.crawl_job_id,
+      documentId: r.document_id || undefined,
+      originalUrl: r.original_url,
+      normalizedUrl: r.normalized_url,
+      canonicalUrl: r.canonical_url || undefined,
+      title: r.title || undefined,
+      contentHash: r.content_hash || undefined,
+      objectKey: r.object_key || undefined,
+      status: r.status,
+      stage: r.stage || undefined,
+      depth: Number(r.depth || 0),
+      retryCount: Number(r.retry_count || 0),
+      sizeBytes: r.size_bytes ? Number(r.size_bytes) : undefined,
+      errorMessage: r.error_message || undefined,
+      createdAt: r.created_at,
+      updatedAt: r.updated_at,
+      completedAt: r.completed_at || undefined,
+    };
+  }
+
   async getJobDocuments(tenantId: string, jobId: string): Promise<(IngestionJobDocument & { document?: Document })[]> {
     if (!isValidUuid(tenantId) || !isValidUuid(jobId)) return [];
     const res = await this.pool.query(
@@ -887,6 +1380,9 @@ export class PostgresDatabaseAdapter implements IDatabaseAdapter {
       documentId: r.document_id,
       status: r.status,
       errorMessage: r.error_message,
+      sourceUrl: r.source_url,
+      stage: r.stage,
+      downloadMetadata: r.download_metadata,
       createdAt: r.created_at,
       updatedAt: r.updated_at,
       document: r.original_filename

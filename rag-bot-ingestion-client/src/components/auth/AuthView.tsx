@@ -66,12 +66,6 @@ export const AuthView: React.FC<AuthViewProps> = memo(({ initialMode = 'login' }
           </button>
         </div>
 
-        {authError && (
-          <div className="alert-box alert-error">
-            {authError}
-          </div>
-        )}
-
         <form onSubmit={handleSubmit} className="auth-form">
           {authMode === 'signup' ? (
             <>
@@ -82,7 +76,10 @@ export const AuthView: React.FC<AuthViewProps> = memo(({ initialMode = 'login' }
                   type="email"
                   placeholder="alex@acme.com"
                   value={email}
-                  onChange={e => setEmail(e.target.value)}
+                  onChange={e => {
+                    setEmail(e.target.value);
+                    if (authError) setAuthError(null);
+                  }}
                   required
                   autoFocus
                 />
@@ -95,7 +92,10 @@ export const AuthView: React.FC<AuthViewProps> = memo(({ initialMode = 'login' }
                   type="text"
                   placeholder="Alex Rivera"
                   value={username}
-                  onChange={e => setUsername(e.target.value)}
+                  onChange={e => {
+                    setUsername(e.target.value);
+                    if (authError) setAuthError(null);
+                  }}
                 />
               </div>
 
@@ -106,7 +106,10 @@ export const AuthView: React.FC<AuthViewProps> = memo(({ initialMode = 'login' }
                   type="password"
                   placeholder="At least 8 characters"
                   value={password}
-                  onChange={e => setPassword(e.target.value)}
+                  onChange={e => {
+                    setPassword(e.target.value);
+                    if (authError) setAuthError(null);
+                  }}
                   required
                   minLength={8}
                 />
@@ -121,7 +124,10 @@ export const AuthView: React.FC<AuthViewProps> = memo(({ initialMode = 'login' }
                   type="text"
                   placeholder="alex@acme.com or alexchen"
                   value={identifier}
-                  onChange={e => setIdentifier(e.target.value)}
+                  onChange={e => {
+                    setIdentifier(e.target.value);
+                    if (authError) setAuthError(null);
+                  }}
                   required
                   autoFocus
                 />
@@ -134,11 +140,20 @@ export const AuthView: React.FC<AuthViewProps> = memo(({ initialMode = 'login' }
                   type="password"
                   placeholder="Enter your password"
                   value={password}
-                  onChange={e => setPassword(e.target.value)}
+                  onChange={e => {
+                    setPassword(e.target.value);
+                    if (authError) setAuthError(null);
+                  }}
                   required
                 />
               </div>
             </>
+          )}
+
+          {authError && (
+            <div className="alert-box alert-error" role="alert">
+              {authError}
+            </div>
           )}
 
           <button
