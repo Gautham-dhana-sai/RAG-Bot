@@ -143,7 +143,11 @@ export class WebsiteCrawlCoordinator {
       }
     }
 
-    const pagesToPersist = Array.from(discoveredMap.values()).slice(0, maxPages);
+    let pagesToPersist = Array.from(discoveredMap.values()).slice(0, maxPages);
+    if (config?.selectedUrls && config.selectedUrls.length > 0) {
+      const selectedSet = new Set(config.selectedUrls.map(u => normalizeUrl(u)).filter(Boolean));
+      pagesToPersist = pagesToPersist.filter(p => selectedSet.has(p.url) || selectedSet.has(normalizeUrl(p.url)));
+    }
     logger.info(`[CrawlCoordinator] Total distinct pages discovered: ${pagesToPersist.length}`);
 
     // 5. Persist crawl_pages and create documents & ingestion_job_documents
@@ -154,57 +158,83 @@ export class WebsiteCrawlCoordinator {
       folderPrefix = entity?.portfolioUrl || entity?.slug || `${tenantId}/${entityId}`;
     }
 
+    const existingPages = await this.db.getCrawlPages(tenantId, crawlJobId);
+    const existingPageMap = new Map<string, CrawlPage>();
+    for (const ep of existingPages) {
+      existingPageMap.set(ep.normalizedUrl, ep);
+      existingPageMap.set(ep.originalUrl, ep);
+      existingPageMap.set(ep.normalizedUrl.replace(/\/+$/, ''), ep);
+    }
+
+    let newlyDiscoveredCount = 0;
+
     for (const item of pagesToPersist) {
-      const documentId = generateUuid();
-      const initialContentHash = computeSha256(`webpage:${entityId}:${item.url}`);
+      const existingPage = existingPageMap.get(item.url) || existingPageMap.get(item.url.replace(/\/+$/, ''));
+      let resolvedDocId: string;
 
-      let filename = 'webpage.md';
-      try {
-        const u = new URL(item.url);
-        const hostSlug = u.hostname.replace(/[^a-zA-Z0-9.-]/g, '_');
-        const pathSlug = u.pathname.replace(/^\/+|\/+$/g, '').replace(/[^a-zA-Z0-9.-]/g, '_') || 'home';
-        filename = `${hostSlug}_${pathSlug}.md`;
-      } catch {
-        // fallback
-      }
-      const initialObjectKey = buildS3ObjectKey(folderPrefix, filename);
+      if (existingPage && existingPage.documentId) {
+        resolvedDocId = existingPage.documentId;
+        // Existing page: reset to queued, isUnchanged to false
+        await this.db.updateCrawlPage(tenantId, crawlJobId, existingPage.id, {
+          status: 'queued',
+          stage: 'QUEUED_FOR_DOWNLOAD',
+          isUnchanged: false,
+        });
+        await this.db.updateJobDocumentStage(tenantId, crawlJobId, resolvedDocId, 'QUEUED_FOR_DOWNLOAD');
+        await this.db.updateJobDocumentStatus(tenantId, crawlJobId, resolvedDocId, 'PENDING');
+      } else {
+        newlyDiscoveredCount++;
+        const documentId = generateUuid();
+        const initialContentHash = computeSha256(`webpage:${entityId}:${item.url}`);
 
-      // Create document entry (or retrieve existing on conflict)
-      const createdDoc = await this.db.createDocument({
-        id: documentId,
-        tenantId,
-        entityId,
-        originalFilename: filename,
-        mimeType: 'text/markdown',
-        sizeBytes: 0,
-        contentHash: initialContentHash,
-        objectKey: initialObjectKey,
-        isPublic: true,
-        status: 'PENDING',
-        sourceType: 'WEBSITE_CRAWL',
-      });
-      const resolvedDocId = createdDoc.id;
+        let filename = 'webpage.md';
+        try {
+          const u = new URL(item.url);
+          const hostSlug = u.hostname.replace(/[^a-zA-Z0-9.-]/g, '_');
+          const pathSlug = u.pathname.replace(/^\/+|\/+$/g, '').replace(/[^a-zA-Z0-9.-]/g, '_') || 'home';
+          filename = `${hostSlug}_${pathSlug}.md`;
+        } catch {
+          // fallback
+        }
+        const initialObjectKey = buildS3ObjectKey(folderPrefix, filename);
 
-      // Create ingestion job document entry
-      await this.db.createJobDocument(tenantId, crawlJobId, resolvedDocId, {
-        sourceUrl: item.url,
-        stage: 'QUEUED_FOR_DOWNLOAD',
-        downloadMetadata: { sourceType: 'webpage', crawlJobId, depth: item.depth, source: item.source },
-      });
+        // Create document entry (or retrieve existing on conflict)
+        const createdDoc = await this.db.createDocument({
+          id: documentId,
+          tenantId,
+          entityId,
+          originalFilename: filename,
+          mimeType: 'text/markdown',
+          sizeBytes: 0,
+          contentHash: initialContentHash,
+          objectKey: initialObjectKey,
+          isPublic: true,
+          status: 'PENDING',
+          sourceType: 'WEBSITE_CRAWL',
+        });
+        resolvedDocId = createdDoc.id;
 
-      // Create crawl page entry
-      const [cp] = await this.db.createCrawlPages([{
-        tenantId,
-        entityId,
-        crawlJobId,
-        documentId: resolvedDocId,
-        originalUrl: item.url,
-        normalizedUrl: item.url,
-        depth: item.depth,
-      }]);
+        // Create ingestion job document entry
+        await this.db.createJobDocument(tenantId, crawlJobId, resolvedDocId, {
+          sourceUrl: item.url,
+          stage: 'QUEUED_FOR_DOWNLOAD',
+          downloadMetadata: { sourceType: 'webpage', crawlJobId, depth: item.depth, source: item.source },
+        });
 
-      if (cp) {
-        createdPages.push(cp);
+        // Create crawl page entry
+        const [cp] = await this.db.createCrawlPages([{
+          tenantId,
+          entityId,
+          crawlJobId,
+          documentId: resolvedDocId,
+          originalUrl: item.url,
+          normalizedUrl: item.url,
+          depth: item.depth,
+        }]);
+
+        if (cp) {
+          createdPages.push(cp);
+        }
       }
 
       // Enqueue page job onto URL download queue
@@ -224,10 +254,12 @@ export class WebsiteCrawlCoordinator {
     }
 
     // 6. Update crawl job and ingestion job status to 'processing_pages' / 'PROCESSING'
+    const crawlJob = await this.db.getCrawlJob(tenantId, entityId, crawlJobId);
     await this.db.updateCrawlJob(tenantId, crawlJobId, {
       status: pagesToPersist.length > 0 ? 'processing_pages' : 'completed',
-      discoveredCount: pagesToPersist.length,
+      discoveredCount: Math.max(pagesToPersist.length, crawlJob?.discoveredCount || 0),
       queuedCount: pagesToPersist.length,
+      newlyDiscoveredCount: (crawlJob?.newlyDiscoveredCount || 0) + newlyDiscoveredCount,
     });
 
     await this.db.updateJobStatus(tenantId, crawlJobId, pagesToPersist.length > 0 ? 'PROCESSING' : 'READY', {
@@ -289,5 +321,114 @@ export class WebsiteCrawlCoordinator {
 
     return rawLinks;
   }
-}
 
+  /**
+   * Discovers eligible website routes without modifying database records or queueing extraction tasks.
+   * Used for Phase 3 selective route extraction preview.
+   */
+  async discoverRoutesOnly(params: {
+    rootUrl: string;
+    config?: CrawlConfig;
+  }): Promise<{
+    rootUrl: string;
+    discoveredCount: number;
+    pages: Array<{ url: string; path: string; depth: number; source: 'root' | 'sitemap' | 'link' }>;
+  }> {
+    const { rootUrl, config } = params;
+    const maxPages = Math.min(config?.maxPages ?? 30, 100);
+    const maxDepth = Math.min(config?.maxDepth ?? 3, 5);
+    const allowedOrigins = config?.allowedOrigins || [];
+    const respectRobots = config?.respectRobotsTxt ?? true;
+
+    const normalizedRoot = normalizeUrl(rootUrl);
+    if (!normalizedRoot) {
+      throw new Error(`Invalid root URL: ${rootUrl}`);
+    }
+
+    let robots: RobotsInfo = { sitemaps: [], disallowedPaths: [], allowedPaths: [] };
+    if (respectRobots) {
+      try {
+        robots = await this.robotsParser.fetchAndParse(normalizedRoot);
+      } catch (err: any) {
+        logger.warn(`[CrawlCoordinator] Error fetching robots.txt: ${err.message}`);
+      }
+    }
+
+    const discoveredMap = new Map<string, { url: string; depth: number; source: 'root' | 'sitemap' | 'link' }>();
+    discoveredMap.set(normalizedRoot, { url: normalizedRoot, depth: 0, source: 'root' });
+
+    try {
+      const sitemapUrls = await this.sitemapParser.discoverUrls(normalizedRoot, robots.sitemaps, maxPages);
+      for (const smUrl of sitemapUrls) {
+        if (discoveredMap.size >= maxPages) break;
+        if (!discoveredMap.has(smUrl)) {
+          if (!respectRobots || this.robotsParser.isPathAllowed(new URL(smUrl).pathname, robots)) {
+            discoveredMap.set(smUrl, { url: smUrl, depth: 1, source: 'sitemap' });
+          }
+        }
+      }
+    } catch (smErr: any) {
+      logger.warn(`[CrawlCoordinator] Sitemap discovery encountered error: ${smErr.message}`);
+    }
+
+    const queueToCrawl: Array<{ url: string; depth: number }> = [{ url: normalizedRoot, depth: 0 }];
+    for (const item of discoveredMap.values()) {
+      if (item.source === 'sitemap' && queueToCrawl.length < 5) {
+        queueToCrawl.push({ url: item.url, depth: 1 });
+      }
+    }
+
+    const visitedHtmlUrls = new Set<string>();
+    while (queueToCrawl.length > 0 && discoveredMap.size < maxPages) {
+      const current = queueToCrawl.shift()!;
+      if (visitedHtmlUrls.has(current.url)) continue;
+      visitedHtmlUrls.add(current.url);
+
+      if (current.depth >= maxDepth) continue;
+
+      try {
+        const links = await this.extractLinksFromPage(current.url);
+        for (const rawLink of links) {
+          if (discoveredMap.size >= maxPages) break;
+
+          const norm = normalizeUrl(rawLink, current.url);
+          if (!norm) continue;
+
+          if (!isAllowedOrigin(norm, normalizedRoot, allowedOrigins)) continue;
+          if (isExcludedUrl(norm).isExcluded) continue;
+          if (respectRobots && !this.robotsParser.isPathAllowed(new URL(norm).pathname, robots)) continue;
+
+          if (!discoveredMap.has(norm)) {
+            const nextDepth = current.depth + 1;
+            discoveredMap.set(norm, { url: norm, depth: nextDepth, source: 'link' });
+            if (nextDepth < maxDepth) {
+              queueToCrawl.push({ url: norm, depth: nextDepth });
+            }
+          }
+        }
+      } catch (pageErr: any) {
+        logger.debug(`[CrawlCoordinator] Could not extract links from ${current.url}: ${pageErr.message}`);
+      }
+    }
+
+    const pages = Array.from(discoveredMap.values()).map(p => {
+      let path = '/';
+      try {
+        const u = new URL(p.url);
+        path = u.pathname + (u.search || '');
+      } catch {}
+      return {
+        url: p.url,
+        path,
+        depth: p.depth,
+        source: p.source,
+      };
+    });
+
+    return {
+      rootUrl: normalizedRoot,
+      discoveredCount: pages.length,
+      pages,
+    };
+  }
+}

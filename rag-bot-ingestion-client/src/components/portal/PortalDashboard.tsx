@@ -192,6 +192,8 @@ export const PortalDashboard: React.FC = memo(() => {
               portal={selectedPortal}
               onJobStarted={handleJobStarted}
               onDocumentsUpdated={handleDocumentsUpdated}
+              portalDocuments={portalDocuments}
+              jobDocuments={jobDocuments}
             />
 
             {/* Active Ingestion Job Status */}
@@ -224,7 +226,9 @@ export const PortalDashboard: React.FC = memo(() => {
           {/* Right Column: Knowledge Base Sidebar */}
           <div className="workspace-col-side">
             <KnowledgeBaseSidebar
+              portalId={selectedPortal?.id}
               documents={portalDocuments}
+              crawls={portalCrawls}
               isLoading={isLoadingDocuments}
               onReload={handleDocumentsUpdated}
             />

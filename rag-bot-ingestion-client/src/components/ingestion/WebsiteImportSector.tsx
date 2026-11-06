@@ -2,6 +2,9 @@ import React, { memo, useState, useCallback, useEffect, useRef } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { Portal, CrawlJob, CrawlPage, IngestionJobDocument, DocumentInfo } from '../../types';
 import { formatBytes } from '../../utils/formatters';
+import { RefetchConfirmModal } from '../common/RefetchConfirmModal';
+import { DuplicateConfirmModal } from '../common/DuplicateConfirmModal';
+import { RouteSelectionModal, DiscoveredRouteItem } from '../common/RouteSelectionModal';
 
 interface WebsiteImportSectorProps {
   portal: Portal;
@@ -78,6 +81,17 @@ export const WebsiteImportSector: React.FC<WebsiteImportSectorProps> = memo(({
   const [isLoadingCrawls, setIsLoadingCrawls] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [retryingKeys, setRetryingKeys] = useState<Record<string, boolean>>({});
+    // Duplicate & Route Selection States (Phases 2 & 3)
+  const [duplicateMatch, setDuplicateMatch] = useState<{ url: string; match: any } | null>(null);
+  const [discoveredRoutesForSelection, setDiscoveredRoutesForSelection] = useState<{ rootUrl: string; pages: DiscoveredRouteItem[] } | null>(null);
+  const [isStartingExtraction, setIsStartingExtraction] = useState(false);
+
+  // Crawl Deletion State (Phase 6)
+  const [crawlToDelete, setCrawlToDelete] = useState<CrawlJob | null>(null);
+  const [isDeletingCrawl, setIsDeletingCrawl] = useState(false);
+
+  const [refetchCrawlTarget, setRefetchCrawlTarget] = useState<CrawlJob | null>(null);
+  const [isRefetching, setIsRefetching] = useState(false);
 
   const pollingRef = useRef<any>(null);
   const crawlStatusSignatureRef = useRef<string>('');
@@ -141,10 +155,9 @@ export const WebsiteImportSector: React.FC<WebsiteImportSectorProps> = memo(({
   }, [fetchCrawlsData]);
 
   // Dynamic Polling: poll every 3 seconds while ANY crawl is running; stop when all are terminal
-  // NOTE: Does NOT reload the Knowledge Base sidebar on interval, only updates the crawl cards internally!
   useEffect(() => {
     const hasRunningCrawl = crawls.some(
-      c => c.status === 'queued' || c.status === 'discovering' || c.status === 'processing_pages'
+      c => c.status === 'queued' || c.status === 'discovering' || c.status === 'processing_pages' || c.refetchStatus === 'refetching'
     );
 
     if (!hasRunningCrawl) {
@@ -193,12 +206,39 @@ export const WebsiteImportSector: React.FC<WebsiteImportSectorProps> = memo(({
       return;
     }
 
-    setInputError(null);
+        setInputError(null);
     setSuccessMessage(null);
     setIsSubmittingInternal(true);
 
     try {
       const client = getClient();
+
+      // Phase 2: Duplicate check
+      const dupCheck = await client.checkDuplicateSource(portal.id, { url: trimmed });
+      if (dupCheck.isDuplicate && dupCheck.match) {
+        setDuplicateMatch({ url: trimmed, match: dupCheck.match });
+        setIsSubmittingInternal(false);
+        return;
+      }
+
+      // Phase 3: Route Discovery & Selection
+      setSuccessMessage(`Discovering routes for "${trimmed}"...`);
+      const discoveryRes = await client.discoverPortalWebsiteRoutes(portal.id, {
+        url: trimmed,
+        maxPages: 30,
+        maxDepth: 3,
+      });
+
+      if (discoveryRes.pages && discoveryRes.pages.length > 0) {
+        setDiscoveredRoutesForSelection({
+          rootUrl: trimmed,
+          pages: discoveryRes.pages,
+        });
+        setIsSubmittingInternal(false);
+        return;
+      }
+
+      // Direct fallback
       const res = await client.startPortalCrawl(portal.id, {
         url: trimmed,
         maxPages: 30,
@@ -210,18 +250,17 @@ export const WebsiteImportSector: React.FC<WebsiteImportSectorProps> = memo(({
         if (onJobStarted) {
           onJobStarted(crawlJobId);
         }
-        // Immediately fetch newly initiated parent crawl job
         const initialJob = await client.getPortalCrawl(portal.id, crawlJobId);
         setCrawls(prev => [initialJob, ...prev.filter(c => c.id !== crawlJobId)]);
       }
 
-      setSuccessMessage(`Website extraction initiated for "${trimmed}". Discovering nested pages and indexing content...`);
+      setSuccessMessage(`Website extraction initiated for "${trimmed}".`);
       setUrlInput('');
       if (onDocumentsUpdated) {
         onDocumentsUpdated();
       }
     } catch (err: any) {
-      setInputError(err.message || 'Website analysis failed. Please verify the URL and try again.');
+      setInputError(err.message || 'Failed to submit website URL. Please try again.');
     } finally {
       setIsSubmittingInternal(false);
     }
@@ -245,6 +284,97 @@ export const WebsiteImportSector: React.FC<WebsiteImportSectorProps> = memo(({
       setRetryingKeys(prev => ({ ...prev, [retryKey]: false }));
     }
   }, [getClient, portal.id, onDocumentsUpdated]);
+
+    const handleConfirmRouteSelection = useCallback(async (selectedUrls: string[]) => {
+    if (!discoveredRoutesForSelection) return;
+    setIsStartingExtraction(true);
+    try {
+      const client = getClient();
+      const res = await client.startPortalCrawl(portal.id, {
+        url: discoveredRoutesForSelection.rootUrl,
+        maxPages: 30,
+        maxDepth: 3,
+        selectedUrls,
+      });
+      const crawlJobId = res.crawlJobId || res.jobId;
+      if (crawlJobId) {
+        if (onJobStarted) onJobStarted(crawlJobId);
+        const initialJob = await client.getPortalCrawl(portal.id, crawlJobId);
+        setCrawls(prev => [initialJob, ...prev.filter(c => c.id !== crawlJobId)]);
+      }
+      setDiscoveredRoutesForSelection(null);
+      setUrlInput('');
+      setSuccessMessage(`Website extraction initiated for "${discoveredRoutesForSelection.rootUrl}" with ${selectedUrls.length} selected pages.`);
+      if (onDocumentsUpdated) onDocumentsUpdated();
+    } catch (err: any) {
+      setInputError(err.message || 'Failed to start extraction');
+    } finally {
+      setIsStartingExtraction(false);
+    }
+  }, [discoveredRoutesForSelection, getClient, portal.id, onJobStarted, onDocumentsUpdated]);
+
+  const handleUpdateDuplicate = useCallback(async () => {
+    if (!duplicateMatch) return;
+    setIsSubmittingInternal(true);
+    try {
+      const client = getClient();
+      await client.refetchPortalCrawl(portal.id, duplicateMatch.match.id);
+      setSuccessMessage(`Website "${duplicateMatch.url}" update initiated.`);
+      setDuplicateMatch(null);
+      setUrlInput('');
+      fetchCrawlsData(true);
+      if (onDocumentsUpdated) onDocumentsUpdated();
+    } catch (err: any) {
+      setInputError(err.message || 'Failed to update existing website');
+    } finally {
+      setIsSubmittingInternal(false);
+    }
+  }, [duplicateMatch, getClient, portal.id, fetchCrawlsData, onDocumentsUpdated]);
+
+  const handleConfirmDeleteCrawl = useCallback(async () => {
+    if (!crawlToDelete) return;
+    setIsDeletingCrawl(true);
+    try {
+      const client = getClient();
+      await client.deletePortalCrawl(portal.id, crawlToDelete.id);
+      setCrawls(prev => prev.filter(c => c.id !== crawlToDelete.id));
+      setCrawlToDelete(null);
+      setSuccessMessage(`Website "${crawlToDelete.rootUrl}" deleted successfully.`);
+      if (onDocumentsUpdated) onDocumentsUpdated();
+    } catch (err: any) {
+      setInputError(err.message || 'Failed to delete website crawl');
+    } finally {
+      setIsDeletingCrawl(false);
+    }
+  }, [crawlToDelete, getClient, portal.id, onDocumentsUpdated]);
+
+  const handleTriggerRefetch = useCallback((crawl: CrawlJob) => {
+    setRefetchCrawlTarget(crawl);
+  }, []);
+
+  const handleConfirmRefetch = useCallback(async () => {
+    if (!refetchCrawlTarget) return;
+    setIsRefetching(true);
+    try {
+      const client = getClient();
+      const res = await client.refetchPortalCrawl(portal.id, refetchCrawlTarget.id);
+      const crawlJobId = res.crawlJobId || res.jobId;
+      setSuccessMessage(`Content refetch initiated for "${refetchCrawlTarget.rootUrl}". Reconciling routes and checking for modifications...`);
+      setRefetchCrawlTarget(null);
+      if (crawlJobId && onJobStarted) {
+        onJobStarted(crawlJobId);
+      }
+      const updated = await client.getPortalCrawl(portal.id, refetchCrawlTarget.id);
+      setCrawls(prev => prev.map(c => (c.id === refetchCrawlTarget.id ? updated : c)));
+      if (onDocumentsUpdated) {
+        onDocumentsUpdated();
+      }
+    } catch (err: any) {
+      setInputError(err.message || 'Failed to start website refetch.');
+    } finally {
+      setIsRefetching(false);
+    }
+  }, [refetchCrawlTarget, getClient, portal.id, onJobStarted, onDocumentsUpdated]);
 
   const submitting = isSubmitting || isSubmittingInternal;
 
@@ -410,6 +540,16 @@ export const WebsiteImportSector: React.FC<WebsiteImportSectorProps> = memo(({
                       <span className={`status-pill ${formatCrawlJobStatus(crawl.status).className}`}>
                         {formatCrawlJobStatus(crawl.status).label}
                       </span>
+                      <button
+                        type="button"
+                        className="btn-secondary btn-sm btn-refetch"
+                        onClick={() => handleTriggerRefetch(crawl)}
+                        disabled={crawl.status === 'discovering' || crawl.status === 'processing_pages' || crawl.refetchStatus === 'refetching'}
+                        style={{ fontSize: '0.75rem', padding: '0.25rem 0.6rem' }}
+                        title="Refetch website to reconcile updated routes and modified content"
+                      >
+                        {crawl.refetchStatus === 'refetching' ? 'Refetching...' : '🔄 Refetch'}
+                      </button>
                       {(failedCount > 0 || skippedCount > 0) && (
                         <button
                           type="button"
@@ -446,6 +586,73 @@ export const WebsiteImportSector: React.FC<WebsiteImportSectorProps> = memo(({
                       />
                     </div>
                   </div>
+
+                  {/* Refetch Information & Metrics Breakdown */}
+                  {(crawl.lastRefetchedAt || crawl.refetchStatus) && (
+                    <div
+                      className="refetch-status-panel"
+                      style={{
+                        background: crawl.refetchStatus === 'failed' ? '#fef2f2' : crawl.refetchStatus === 'refetching' ? '#eff6ff' : '#f8fafc',
+                        border: `1px solid ${crawl.refetchStatus === 'failed' ? '#fecaca' : crawl.refetchStatus === 'refetching' ? '#bfdbfe' : '#e2e8f0'}`,
+                        borderRadius: '8px',
+                        padding: '0.75rem 1rem',
+                        marginBottom: '1rem',
+                        fontSize: '0.82rem',
+                      }}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.4rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                          <strong style={{ color: crawl.refetchStatus === 'failed' ? '#991b1b' : '#1e293b' }}>
+                            Content Refetch Status:
+                          </strong>
+                          <span
+                            className={`status-pill ${
+                              crawl.refetchStatus === 'refetching'
+                                ? 'status-processing'
+                                : crawl.refetchStatus === 'completed'
+                                ? 'status-ready'
+                                : crawl.refetchStatus === 'failed'
+                                ? 'status-failed'
+                                : 'status-pending'
+                            }`}
+                            style={{ fontSize: '0.7rem' }}
+                          >
+                            {crawl.refetchStatus === 'refetching'
+                              ? 'Checking for updates...'
+                              : crawl.refetchStatus === 'completed'
+                              ? 'Completed'
+                              : crawl.refetchStatus === 'failed'
+                              ? 'Failed'
+                              : 'Idle'}
+                          </span>
+                        </div>
+
+                        <div style={{ color: '#64748b', fontSize: '0.75rem', display: 'flex', gap: '0.75rem' }}>
+                          <span>Last Fetched: {new Date(crawl.createdAt).toLocaleString()}</span>
+                          {crawl.lastRefetchedAt && (
+                            <span>&bull; Last Refetched: {new Date(crawl.lastRefetchedAt).toLocaleString()}</span>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Breakdown metrics */}
+                      <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', marginTop: '0.4rem', color: '#334155', fontSize: '0.78rem' }}>
+                        <span><strong>Routes Checked:</strong> {crawl.discoveredCount || 0}</span>
+                        <span><strong>Unchanged:</strong> <span style={{ color: '#16a34a', fontWeight: 600 }}>{crawl.unchangedCount ?? 0}</span></span>
+                        <span><strong>Changed:</strong> <span style={{ color: '#2563eb', fontWeight: 600 }}>{crawl.changedCount ?? 0}</span></span>
+                        <span><strong>Newly Discovered:</strong> <span style={{ color: '#0891b2', fontWeight: 600 }}>{crawl.newlyDiscoveredCount ?? 0}</span></span>
+                        {failedCount > 0 && (
+                          <span><strong>Failed:</strong> <span style={{ color: '#dc2626', fontWeight: 600 }}>{failedCount}</span></span>
+                        )}
+                      </div>
+
+                      {crawl.refetchStatus === 'completed' && (crawl.changedCount ?? 0) === 0 && (crawl.newlyDiscoveredCount ?? 0) === 0 && (crawl.unchangedCount ?? 0) > 0 && (
+                        <div style={{ marginTop: '0.4rem', color: '#16a34a', fontWeight: 500, fontSize: '0.78rem' }}>
+                          ✓ All content is up to date.
+                        </div>
+                      )}
+                    </div>
+                  )}
 
                   {/* Metric Badges */}
                   <div
@@ -553,6 +760,11 @@ export const WebsiteImportSector: React.FC<WebsiteImportSectorProps> = memo(({
                                     <span className={`status-pill ${pageStatusInfo.className}`} style={{ fontSize: '0.7rem' }}>
                                       {pageStatusInfo.label}
                                     </span>
+                                    {page.isUnchanged && (
+                                      <span style={{ marginLeft: '0.35rem', fontSize: '0.68rem', background: '#ecfdf5', color: '#047857', padding: '0.1rem 0.35rem', borderRadius: '4px', border: '1px solid #a7f3d0' }}>
+                                        Unchanged
+                                      </span>
+                                    )}
                                   </td>
                                   <td style={{ color: '#64748b' }}>
                                     {page.sizeBytes ? formatBytes(page.sizeBytes) : '—'}
@@ -636,6 +848,98 @@ export const WebsiteImportSector: React.FC<WebsiteImportSectorProps> = memo(({
           </div>
         </div>
       )}
+
+            {/* Duplicate Website Confirmation Modal (Phase 2) */}
+      <DuplicateConfirmModal
+        isOpen={Boolean(duplicateMatch)}
+        sourceName={duplicateMatch?.url || ''}
+        sourceType="website"
+        isProcessing={isSubmittingInternal}
+        onUpdateExisting={handleUpdateDuplicate}
+        onKeepExisting={() => setDuplicateMatch(null)}
+        onCancel={() => setDuplicateMatch(null)}
+      />
+
+      {/* Route Selection Modal (Phase 3) */}
+      <RouteSelectionModal
+        isOpen={Boolean(discoveredRoutesForSelection)}
+        rootUrl={discoveredRoutesForSelection?.rootUrl || ''}
+        routes={discoveredRoutesForSelection?.pages || []}
+        isSubmitting={isStartingExtraction}
+        onConfirm={handleConfirmRouteSelection}
+        onCancel={() => setDiscoveredRoutesForSelection(null)}
+      />
+
+      {/* Website Crawl Delete Confirmation Modal (Phase 6) */}
+      {crawlToDelete && (
+        <div className="modal-backdrop modal-overlay" onClick={() => setCrawlToDelete(null)}>
+          <div className="modal-dialog modal-card modal-delete" onClick={e => e.stopPropagation()} style={{ maxWidth: '440px' }}>
+            <div className="modal-header">
+              <h3 style={{ display: 'flex', alignItems: 'center', margin: 0, fontSize: '1.1rem' }}>
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  viewBox="0 0 24 24"
+                  width="18"
+                  height="18"
+                  fill="none"
+                  stroke="#dc2626"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  style={{ marginRight: '0.4rem', flexShrink: 0 }}
+                >
+                  <polyline points="3 6 5 6 21 6" />
+                  <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                  <line x1="10" y1="11" x2="10" y2="17" />
+                  <line x1="14" y1="11" x2="14" y2="17" />
+                </svg>
+                Delete Website Source
+              </h3>
+              <button
+                type="button"
+                className="btn-close"
+                onClick={() => setCrawlToDelete(null)}
+                disabled={isDeletingCrawl}
+              >
+                ✕
+              </button>
+            </div>
+            <div className="modal-body" style={{ padding: '1rem 0' }}>
+              <p>
+                Are you sure you want to delete <strong>{crawlToDelete.rootUrl}</strong> and all its associated indexed pages from this portal?
+              </p>
+              <p style={{ fontSize: '0.85rem', color: '#64748b', marginTop: '0.5rem' }}>
+                This action cannot be undone. All extracted pages, chunks, and embeddings will be permanently removed.
+              </p>
+            </div>
+            <div className="modal-footer" style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem' }}>
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={() => setCrawlToDelete(null)}
+                disabled={isDeletingCrawl}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn-danger btn-delete-confirm"
+                onClick={handleConfirmDeleteCrawl}
+                disabled={isDeletingCrawl}
+              >
+                {isDeletingCrawl ? 'Deleting...' : 'Delete Source'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <RefetchConfirmModal
+        crawl={refetchCrawlTarget}
+        isRefetching={isRefetching}
+        onCancel={() => setRefetchCrawlTarget(null)}
+        onConfirm={handleConfirmRefetch}
+      />
     </div>
   );
 });

@@ -263,28 +263,69 @@ export class PortfoliosService {
         retrievedChunks,
       });
 
-      // 1. Extract verified citations from any DOC-<chunkId> tags in the answer (singly, combined, or truncated)
-      const citationRegex = /\bDOC-([a-zA-Z0-9_-]+)\b/gi;
-      const citedChunkIds = new Set<string>();
+            // 1. Extract verified citations from any DOC-<chunkId> or CHUNK tags in the answer
+      const citationRegex = /(?:DOC|CHUNK)[:\s-]*([a-zA-Z0-9_-]+)/gi;
+      const citedIds = new Set<string>();
       let match;
       while ((match = citationRegex.exec(result.answer)) !== null) {
-        citedChunkIds.add(match[1]);
+        citedIds.add(match[1].toLowerCase());
       }
 
-      const citations: any[] = [];
-      for (const sc of retrievedChunks) {
-        if (citedChunkIds.size === 0 || citedChunkIds.has(sc.chunk.id)) {
-          citations.push({
-            chunkId: sc.chunk.id,
-            documentId: sc.document.id,
-            documentTitle: sc.document.originalFilename,
-            sourceUrl: sc.chunk.metadata?.sourceUrl || sc.chunk.metadata?.canonicalUrl || (sc.document as any)?.sourceUrl,
-            pageNumber: sc.chunk.pageNumber || 1,
-            snippet: sc.chunk.chunkText.length > 300 ? sc.chunk.chunkText.substring(0, 300) + '...' : sc.chunk.chunkText,
-            quote: sc.chunk.chunkText.length > 180 ? sc.chunk.chunkText.substring(0, 180) + '...' : sc.chunk.chunkText,
-            score: sc.score,
-          });
+      let citations: any[] = [];
+      if (citedIds.size > 0) {
+        for (const sc of retrievedChunks) {
+          const chunkId = sc.chunk.id.toLowerCase();
+          const docId = sc.document.id.toLowerCase();
+          const docTitle = (sc.document.originalFilename || '').toLowerCase();
+          const chunkIdx = sc.chunk.chunkIndex.toString();
+          const chunkNum = (sc.chunk.chunkIndex + 1).toString();
+
+          const isCited = Array.from(citedIds).some(id => 
+            chunkId.includes(id) || 
+            docId.includes(id) || 
+            id.includes(chunkId) || 
+            id.includes(docId) ||
+            id === chunkIdx ||
+            id === chunkNum ||
+            docTitle.includes(id)
+          );
+
+          if (isCited) {
+            citations.push({
+              chunkId: sc.chunk.id,
+              documentId: sc.document.id,
+              documentTitle: sc.document.originalFilename,
+              sourceTitle: sc.document.originalFilename,
+              sourceType: sc.document.sourceType,
+              mimeType: sc.document.mimeType,
+              versionId: sc.chunk.versionId,
+              sourceUrl: sc.chunk.metadata?.sourceUrl || sc.chunk.metadata?.canonicalUrl || (sc.document as any)?.sourceUrl,
+              pageNumber: sc.chunk.pageNumber || 1,
+              snippet: sc.chunk.chunkText.length > 300 ? sc.chunk.chunkText.substring(0, 300) + '...' : sc.chunk.chunkText,
+              quote: sc.chunk.chunkText.length > 180 ? sc.chunk.chunkText.substring(0, 180) + '...' : sc.chunk.chunkText,
+              score: sc.score,
+            });
+          }
         }
+      }
+
+      // If strict tag matching yielded no citations (e.g. LLM used ordinal numbers or general summary),
+      // fall back to the top retrieved grounding chunks so reasoning sources are ALWAYS returned!
+      if (citations.length === 0 && retrievedChunks.length > 0 && !result.insufficientEvidence) {
+        citations = retrievedChunks.slice(0, 4).map(sc => ({
+          chunkId: sc.chunk.id,
+          documentId: sc.document.id,
+          documentTitle: sc.document.originalFilename,
+          sourceTitle: sc.document.originalFilename,
+          sourceType: sc.document.sourceType,
+          mimeType: sc.document.mimeType,
+          versionId: sc.chunk.versionId,
+          sourceUrl: sc.chunk.metadata?.sourceUrl || sc.chunk.metadata?.canonicalUrl || (sc.document as any)?.sourceUrl,
+          pageNumber: sc.chunk.pageNumber || 1,
+          snippet: sc.chunk.chunkText.length > 300 ? sc.chunk.chunkText.substring(0, 300) + '...' : sc.chunk.chunkText,
+          quote: sc.chunk.chunkText.length > 180 ? sc.chunk.chunkText.substring(0, 180) + '...' : sc.chunk.chunkText,
+          score: sc.score,
+        }));
       }
 
       // 2. Strip internal raw tags like [DOC-uuid], [DOC-a, DOC-b], or truncated [DOC-uuid from the answer prose
@@ -331,6 +372,42 @@ export class PortfoliosService {
   async listDocuments(auth: AuthContext, portfolioReference: string): Promise<Document[]> {
     const { tenantId, entity } = await this.resolvePortfolio(auth, portfolioReference);
     return this.documentsService.listDocuments(tenantId, entity.id);
+  }
+
+  /**
+   * Get document content buffer for secure viewing
+   */
+  async getDocumentContent(
+    auth: AuthContext,
+    portfolioReference: string,
+    documentId: string
+  ): Promise<{ document: Document; buffer: Buffer }> {
+    const { tenantId, entity } = await this.resolvePortfolio(auth, portfolioReference);
+    const document = await this.documentsService.getDocument(tenantId, entity.id, documentId);
+    if (!document) {
+      throw new (await import('../../shared/errors.js')).NotFoundError('Document', documentId);
+    }
+    if (!this.storage) {
+      throw new (await import('../../shared/errors.js')).AppError('Storage adapter is not configured');
+    }
+    const buffer = await this.storage.downloadFile(document.objectKey);
+    return { document, buffer };
+  }
+
+  /**
+   * Delete a single document from a portfolio
+   */
+  async deleteDocument(
+    auth: AuthContext,
+    portfolioReference: string,
+    documentId: string
+  ): Promise<{ success: boolean; message: string }> {
+    const { tenantId, entity } = await this.resolvePortfolio(auth, portfolioReference);
+    await this.documentsService.deleteDocument(tenantId, entity.id, documentId);
+    return {
+      success: true,
+      message: 'Document deleted successfully',
+    };
   }
 
   /**
@@ -495,7 +572,7 @@ export class PortfoliosService {
   async startWebsiteCrawl(
     auth: AuthContext,
     portfolioReference: string,
-    data: { url: string; maxPages?: number; maxDepth?: number }
+    data: { url: string; maxPages?: number; maxDepth?: number; selectedUrls?: string[] }
   ): Promise<any> {
     const { tenantId, entity } = await this.resolvePortfolio(auth, portfolioReference);
     return this.ingestionService.startWebsiteCrawl({
@@ -506,6 +583,7 @@ export class PortfoliosService {
       config: {
         maxPages: data.maxPages,
         maxDepth: data.maxDepth,
+        selectedUrls: data.selectedUrls,
       },
     });
   }
@@ -558,6 +636,134 @@ export class PortfoliosService {
       pageUrl,
       portfolioUrl: entity.portfolioUrl || entity.slug,
     });
+  }
+
+  /**
+   * Refetch a website crawl to reconcile updated routes and content
+   */
+  async refetchCrawl(
+    auth: AuthContext,
+    portfolioReference: string,
+    crawlJobId: string
+  ): Promise<any> {
+    const { tenantId, entity } = await this.resolvePortfolio(auth, portfolioReference);
+    return this.ingestionService.refetchWebsiteCrawl({
+      tenantId,
+      entityId: entity.id,
+      crawlJobId,
+      portfolioUrl: entity.portfolioUrl || entity.slug,
+    });
+  }
+
+  /**
+   * Check for duplicate sources before ingestion
+   */
+  async checkDuplicateSource(
+    auth: AuthContext,
+    portfolioReference: string,
+    params: { url?: string; filename?: string }
+  ): Promise<{ isDuplicate: boolean; type?: 'website' | 'file'; match?: any }> {
+    const { tenantId, entity } = await this.resolvePortfolio(auth, portfolioReference);
+
+    if (params.url) {
+      const crawls = await this.db.listCrawlJobs(tenantId, entity.id);
+      const matchedCrawl = crawls.find(c => {
+        try {
+          const u1 = new URL(c.rootUrl);
+          const u2 = new URL(params.url!);
+          return u1.hostname.toLowerCase() === u2.hostname.toLowerCase() && u1.pathname.replace(/\/+$/, '') === u2.pathname.replace(/\/+$/, '');
+        } catch {
+          return c.rootUrl.toLowerCase() === params.url!.toLowerCase();
+        }
+      });
+      if (matchedCrawl) {
+        return {
+          isDuplicate: true,
+          type: 'website',
+          match: {
+            id: matchedCrawl.id,
+            rootUrl: matchedCrawl.rootUrl,
+            status: matchedCrawl.status,
+            createdAt: matchedCrawl.createdAt,
+          },
+        };
+      }
+    }
+
+    if (params.filename) {
+      const docs = await this.documentsService.listDocuments(tenantId, entity.id);
+      const matchedDoc = docs.find(d => d.originalFilename.toLowerCase() === params.filename!.toLowerCase());
+      if (matchedDoc) {
+        return {
+          isDuplicate: true,
+          type: 'file',
+          match: {
+            id: matchedDoc.id,
+            filename: matchedDoc.originalFilename,
+            sizeBytes: matchedDoc.sizeBytes,
+            createdAt: matchedDoc.createdAt,
+          },
+        };
+      }
+    }
+
+    return { isDuplicate: false };
+  }
+
+  /**
+   * Discover available routes for a website root URL without starting full page extraction
+   */
+  async discoverWebsiteRoutes(
+    auth: AuthContext,
+    portfolioReference: string,
+    params: { url: string; maxPages?: number; maxDepth?: number }
+  ): Promise<any> {
+    const { tenantId, entity } = await this.resolvePortfolio(auth, portfolioReference);
+    const coordinator = new (await import('../crawler/website-crawl-coordinator.js')).WebsiteCrawlCoordinator(this.db, (this as any).queue || { enqueueUrlDownloadJob: async () => {} } as any);
+    return coordinator.discoverRoutesOnly({
+      rootUrl: params.url,
+      config: {
+        maxPages: params.maxPages || 30,
+        maxDepth: params.maxDepth || 3,
+      },
+    });
+  }
+
+  /**
+   * Delete an entire website crawl job and all associated child pages, documents and storage
+   */
+  async deleteCrawlJob(
+    auth: AuthContext,
+    portfolioReference: string,
+    crawlJobId: string
+  ): Promise<{ success: boolean; message: string }> {
+    const { tenantId, entity } = await this.resolvePortfolio(auth, portfolioReference);
+    const crawl = await this.db.getCrawlJob(tenantId, entity.id, crawlJobId);
+    if (!crawl) {
+      throw new (await import('../../shared/errors.js')).NotFoundError('CrawlJob', crawlJobId);
+    }
+
+    const pages = await this.db.getCrawlPages(tenantId, crawlJobId);
+    for (const page of pages) {
+      if (page.documentId) {
+        try {
+          await this.documentsService.deleteDocument(tenantId, entity.id, page.documentId);
+        } catch {
+          // ignore
+        }
+      }
+    }
+
+    if ((this.db as any).deleteCrawlJob) {
+      await (this.db as any).deleteCrawlJob(tenantId, entity.id, crawlJobId);
+    } else {
+      await this.db.updateCrawlJob(tenantId, crawlJobId, { status: 'cancelled' });
+    }
+
+    return {
+      success: true,
+      message: `Website extraction for ${crawl.rootUrl} was deleted successfully.`,
+    };
   }
 }
 

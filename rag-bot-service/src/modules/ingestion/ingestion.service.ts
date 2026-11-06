@@ -523,12 +523,12 @@ export class IngestionService {
   /**
    * Process a single document through extraction, chunking, embeddings, and indexing.
    */
-  async processSingleDocument(tenantId: string, entityId: string, jobId: string, documentId: string): Promise<void> {
+  async processSingleDocument(tenantId: string, entityId: string, jobId: string, documentId: string, options?: { versionId?: string }): Promise<void> {
     logger.info(`[DocPipeline] Fetching document metadata for ${documentId}...`);
     const document = await this.documentsService.getDocument(tenantId, entityId, documentId);
 
     // If document is already READY (idempotent duplicate submission), check if it contains legacy placeholder stub chunks
-    if (document.status === 'READY') {
+    if (document.status === 'READY' && !options?.versionId) {
       let isStubbedImage = false;
       if (document.mimeType && document.mimeType.startsWith('image/')) {
         try {
@@ -602,6 +602,7 @@ export class IngestionService {
           }),
     };
 
+    const targetVersionId = options?.versionId;
     const unindexedChunks = this.chunkingService.chunkExtractedContent(
       {
         ...extraction,
@@ -611,6 +612,7 @@ export class IngestionService {
         tenantId,
         entityId,
         documentId,
+        versionId: targetVersionId,
       }
     );
 
@@ -626,13 +628,23 @@ export class IngestionService {
 
     // 5. Index chunks in database
     logger.info(`[DocPipeline] Step 5/6: Storing chunks in PostgreSQL database...`);
-    await this.db.deleteChunksByDocument(tenantId, documentId);
+    if (!targetVersionId) {
+      await this.db.deleteChunksByDocument(tenantId, documentId);
+    }
     await this.db.insertChunks(embeddedChunks);
     logger.info(`[DocPipeline] Step 5/6: Inserted ${embeddedChunks.length} chunks into database.`);
 
-    // 6. Mark document as READY
+    // 6. Mark document as READY & activate version atomically
     logger.info(`[DocPipeline] Step 6/6: Marking document ${documentId} as READY.`);
-    await this.db.updateDocumentStatus(tenantId, documentId, 'READY');
+    if (targetVersionId) {
+      await this.db.activateDocumentVersion(tenantId, documentId, targetVersionId, {
+        contentHash: document.contentHash,
+        objectKey: document.objectKey,
+        sizeBytes: Number(document.sizeBytes) || fileBuffer.length,
+      });
+    } else {
+      await this.db.updateDocumentStatus(tenantId, documentId, 'READY');
+    }
     await this.db.updateJobDocumentStatus(tenantId, jobId, documentId, 'READY');
 
     // Sync crawl page status and crawl job aggregates if document belongs to a website crawl
@@ -746,7 +758,7 @@ export class IngestionService {
       this.storage.constructor.name === 'LocalStorageAdapter' ||
       this.queue.constructor.name === 'LocalQueueAdapter';
 
-    if (isLocal) {
+    if (isLocal && (this.queue as any).isAutoProcess !== false) {
       setImmediate(async () => {
         try {
           const coordinator = new WebsiteCrawlCoordinator(this.db, this.queue);
@@ -773,6 +785,90 @@ export class IngestionService {
       rootUrl: normalizedRoot,
       statusUrl: `/v1/portals/${entityId}/crawls/${crawlJob.id}`,
       createdAt: crawlJob.createdAt.toISOString(),
+    };
+  }
+
+  /**
+   * Refetch a previously submitted website crawl source and reconcile updated routes.
+   */
+  async refetchWebsiteCrawl(params: {
+    tenantId: string;
+    entityId: string;
+    crawlJobId: string;
+    portfolioUrl?: string;
+  }): Promise<{
+    crawlJobId: string;
+    jobId: string;
+    entityId: string;
+    tenantId: string;
+    status: string;
+    rootUrl: string;
+    statusUrl: string;
+  }> {
+    const { tenantId, entityId, crawlJobId, portfolioUrl } = params;
+    const crawlJob = await this.db.getCrawlJob(tenantId, entityId, crawlJobId);
+    if (!crawlJob) {
+      throw new NotFoundError('Crawl Job', crawlJobId);
+    }
+
+    // 1. Mark crawl job as discovering / refetching
+    await this.db.updateCrawlJob(tenantId, crawlJobId, {
+      status: 'discovering',
+      refetchStatus: 'refetching',
+      lastRefetchedAt: new Date(),
+      unchangedCount: 0,
+      changedCount: 0,
+      newlyDiscoveredCount: 0,
+    });
+
+    // 2. Mark paired ingestion job as PROCESSING
+    await this.db.updateJobStatus(tenantId, crawlJobId, 'PROCESSING');
+
+    // 3. Enqueue crawl coordinator message to download queue
+    await this.queue.enqueueUrlDownloadJob({
+      tenantId,
+      entityId,
+      jobId: crawlJobId,
+      url: crawlJob.rootUrl,
+      portfolioUrl,
+      sourceType: 'website_crawl',
+      action: 'WEBSITE_CRAWL',
+      attempt: 1,
+    });
+
+    // 4. In local mode, invoke coordinator discovery
+    const isLocal =
+      env.STORAGE_ADAPTER === 'local' ||
+      env.QUEUE_ADAPTER === 'local' ||
+      this.storage.constructor.name === 'LocalStorageAdapter' ||
+      this.queue.constructor.name === 'LocalQueueAdapter';
+
+    if (isLocal && (this.queue as any).isAutoProcess !== false) {
+      setImmediate(async () => {
+        try {
+          const coordinator = new WebsiteCrawlCoordinator(this.db, this.queue);
+          await coordinator.executeDiscovery({
+            tenantId,
+            entityId,
+            crawlJobId,
+            rootUrl: crawlJob.rootUrl,
+            portfolioUrl,
+            config: crawlJob.config,
+          });
+        } catch (err: any) {
+          logger.error(`[IngestionService:Refetch] Local coordinator discovery error:`, err);
+        }
+      });
+    }
+
+    return {
+      crawlJobId: crawlJob.id,
+      jobId: crawlJob.id,
+      entityId,
+      tenantId,
+      status: 'discovering',
+      rootUrl: crawlJob.rootUrl,
+      statusUrl: `/v1/portals/${entityId}/crawls/${crawlJob.id}`,
     };
   }
 

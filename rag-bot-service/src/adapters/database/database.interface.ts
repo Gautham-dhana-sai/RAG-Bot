@@ -92,6 +92,9 @@ export interface IDatabaseAdapter {
     sizeBytes: number;
     processingVersion?: string;
   }): Promise<DocumentVersion>;
+  getDocumentVersions(tenantId: string, documentId: string): Promise<DocumentVersion[]>;
+  getLatestDocumentVersion(tenantId: string, documentId: string): Promise<DocumentVersion | null>;
+  activateDocumentVersion(tenantId: string, documentId: string, versionId: string, updates?: { contentHash?: string; objectKey?: string; sizeBytes?: number }): Promise<void>;
 
   // Ingestion Jobs
   getJobById(tenantId: string, entityId: string, jobId: string): Promise<IngestionJob | null>;
@@ -113,6 +116,7 @@ export interface IDatabaseAdapter {
   }): Promise<CrawlJob>;
   getCrawlJob(tenantId: string, entityId: string, crawlJobId: string): Promise<CrawlJob | null>;
   listCrawlJobs(tenantId: string, entityId: string): Promise<CrawlJob[]>;
+  deleteCrawlJob?(tenantId: string, entityId: string, crawlJobId: string): Promise<boolean>;
   updateCrawlJob(tenantId: string, crawlJobId: string, updates: Partial<CrawlJob>): Promise<void>;
   createCrawlPages(pages: Array<{
     tenantId: string;

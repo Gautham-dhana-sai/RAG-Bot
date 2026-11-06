@@ -68,8 +68,9 @@ export class DownloadWorker {
     const documentId: string = payload.documentId;
     logger.info(`[DownloadWorker] Received download job for document ${documentId} (job: ${jobId}, URL: ${safeUrl})`);
 
+    const isWebsitePage = payload.action === 'WEBSITE_PAGE';
     const jobDoc = await this.db.getJobDocumentByDocumentId(documentId);
-    if (jobDoc && (jobDoc.stage === 'UPLOADED_TO_S3' || jobDoc.status === 'READY')) {
+    if (!isWebsitePage && jobDoc && (jobDoc.stage === 'UPLOADED_TO_S3' || jobDoc.status === 'READY')) {
       logger.info(`[DownloadWorker] Document ${documentId} has already been downloaded/processed (stage: ${jobDoc.stage}, status: ${jobDoc.status}). Skipping (idempotent).`);
       return;
     }
@@ -102,11 +103,11 @@ export class DownloadWorker {
 
       // 5. Check if document already exists with this content hash in this entity (deduplication)
       const existingDoc = await this.db.getDocumentByHash(entityId, contentHash);
-      let finalDocId = documentId;
+      let resolvedDocId = documentId;
 
       if (existingDoc && existingDoc.id !== documentId) {
         logger.info(`[DownloadWorker] Document with hash ${contentHash} already exists (ID: ${existingDoc.id}). Linking existing document.`);
-        finalDocId = existingDoc.id;
+        resolvedDocId = existingDoc.id;
         await this.db.updateJobDocumentStage(tenantId, jobId, documentId, 'UPLOADED_TO_S3', undefined, {
           finalUrl: downloadResult.finalUrl,
           sizeBytes: downloadResult.sizeBytes,
@@ -180,17 +181,17 @@ export class DownloadWorker {
       // 9. Process downstream ingestion: inline if available, or forward to Ingestion Queue
       if (this.ingestionService) {
         try {
-          logger.info(`[DownloadWorker:File] Executing inline ingestion for doc ${finalDocId}...`);
-          await this.ingestionService.processSingleDocument(tenantId, entityId, jobId, finalDocId);
-          logger.info(`[DownloadWorker:File] Inline ingestion completed for doc ${finalDocId}`);
+          logger.info(`[DownloadWorker:File] Executing inline ingestion for doc ${documentId}...`);
+          await this.ingestionService.processSingleDocument(tenantId, entityId, jobId, resolvedDocId);
+          logger.info(`[DownloadWorker:File] Inline ingestion completed for doc ${documentId}`);
         } catch (ingestErr: any) {
-          logger.error(`[DownloadWorker:File] Inline ingestion failed for doc ${finalDocId}:`, ingestErr);
+          logger.error(`[DownloadWorker:File] Inline ingestion failed for doc ${documentId}:`, ingestErr);
           try {
             await this.queue.enqueueIngestionJob({
               tenantId,
               entityId,
               jobId,
-              documentId: finalDocId,
+              documentId: resolvedDocId,
               attempt: 1,
             });
           } catch (qErr: any) {
@@ -198,13 +199,13 @@ export class DownloadWorker {
           }
         }
       } else {
-        logger.info(`[DownloadWorker] Forwarding document ${finalDocId} (job ${jobId}) to Ingestion Queue...`);
+        logger.info(`[DownloadWorker] Forwarding document ${documentId} (job ${jobId}) to Ingestion Queue...`);
         try {
           await this.queue.enqueueIngestionJob({
             tenantId,
             entityId,
             jobId,
-            documentId: finalDocId,
+            documentId: documentId,
             attempt: 1,
           });
         } catch (qErr: any) {
@@ -369,98 +370,113 @@ export class DownloadWorker {
       const filename = `${safeSlug || 'page'}-${Date.now()}.md`;
       const objectKey = buildS3ObjectKey(folderPrefix, filename);
 
-      // Check deduplication
-      const existingDoc = await this.db.getDocumentByHash(entityId, contentHash);
-      let finalDocId = documentId;
+      // Refetch Change Detection: Check if page already exists and content is unchanged
+      const currentDoc = await this.db.getDocumentById(tenantId, entityId, documentId);
+      const latestVersion = await this.db.getLatestDocumentVersion(tenantId, documentId);
+      const currentHash = latestVersion?.contentHash || currentDoc?.contentHash;
+      const isAlreadyReady = currentDoc?.status === 'READY';
 
-      if (existingDoc && existingDoc.id !== documentId) {
-        logger.info(`[DownloadWorker:Website] Webpage with hash ${contentHash} already exists (ID: ${existingDoc.id}). Linking existing document.`);
-        finalDocId = existingDoc.id;
-        await this.db.updateJobDocumentStage(tenantId, jobId, documentId, 'UPLOADED_TO_S3', undefined, {
+      if (isAlreadyReady && currentHash === contentHash) {
+        logger.info(`[DownloadWorker:Website] Content hash ${contentHash} unchanged for ${safeUrl}. Skipping re-embedding.`);
+        if (crawlJobId) {
+          await this.db.updateCrawlPage(tenantId, crawlJobId, url, {
+            status: 'completed',
+            stage: 'READY',
+            isUnchanged: true,
+            title: extractionResult.title,
+            canonicalUrl: extractionResult.canonicalUrl,
+            sizeBytes: markdownBuffer.length,
+          });
+          if (this.db.syncCrawlJobAggregates) {
+            await this.db.syncCrawlJobAggregates(tenantId, crawlJobId);
+          }
+        }
+        await this.db.updateJobDocumentStage(tenantId, jobId, documentId, 'READY', undefined, {
           finalUrl: extractionResult.canonicalUrl,
           canonicalUrl: extractionResult.canonicalUrl,
           sourceType: 'webpage',
           title: extractionResult.title,
           sizeBytes: markdownBuffer.length,
           mimeType: 'text/markdown',
-          isDuplicate: true,
+          isUnchanged: true,
         });
-        try {
-          await this.db.deleteDocument(tenantId, entityId, documentId);
-        } catch {
-          // ignore
-        }
-      } else {
-        // Upload normalized Markdown to S3
-        logger.info(`[DownloadWorker:Website] Uploading extracted markdown to storage (key: "${objectKey}")...`);
-        await this.storage.uploadFile(objectKey, markdownBuffer, 'text/markdown');
+        await this.db.updateJobDocumentStatus(tenantId, jobId, documentId, 'READY');
+        return;
+      }
 
-        const existingDocById = await this.db.getDocumentById(tenantId, entityId, documentId);
-        const displayName = extractionResult.title || 'Webpage';
-        if (existingDocById) {
-          if (this.db.updateDocumentMetadata) {
-            await this.db.updateDocumentMetadata(tenantId, documentId, {
-              originalFilename: displayName,
-              mimeType: 'text/markdown',
-              sizeBytes: markdownBuffer.length,
-              contentHash,
-              objectKey,
-              status: 'PENDING',
-            });
-          } else {
-            await this.db.updateDocumentStatus(tenantId, documentId, 'PENDING');
-          }
-        } else {
-          await this.db.createDocument({
-            id: documentId,
-            tenantId,
-            entityId,
+      // Content changed or new page: Upload normalized Markdown to S3
+      logger.info(`[DownloadWorker:Website] Uploading extracted markdown to storage (key: "${objectKey}")...`);
+      await this.storage.uploadFile(objectKey, markdownBuffer, 'text/markdown');
+
+      const existingDocById = await this.db.getDocumentById(tenantId, entityId, documentId);
+      const displayName = extractionResult.title || 'Webpage';
+      if (existingDocById) {
+        if (this.db.updateDocumentMetadata) {
+          await this.db.updateDocumentMetadata(tenantId, documentId, {
             originalFilename: displayName,
             mimeType: 'text/markdown',
             sizeBytes: markdownBuffer.length,
             contentHash,
             objectKey,
-            isPublic: true,
-            status: 'PENDING',
-            sourceType: crawlJobId ? 'WEBSITE_CRAWL' : 'WEBSITE_IMPORT',
+            status: 'PROCESSING',
           });
+        } else {
+          await this.db.updateDocumentStatus(tenantId, documentId, 'PROCESSING');
         }
-
-        try {
-          await this.db.createDocumentVersion({
-            tenantId,
-            entityId,
-            documentId,
-            versionNumber: 1,
-            contentHash,
-            objectKey,
-            sizeBytes: markdownBuffer.length,
-          });
-        } catch {
-          // ignore
-        }
-
-        await this.db.updateJobDocumentStage(tenantId, jobId, documentId, 'UPLOADED_TO_S3', undefined, {
-          finalUrl: extractionResult.canonicalUrl,
-          canonicalUrl: extractionResult.canonicalUrl,
-          sourceType: 'webpage',
-          title: extractionResult.title,
-          sizeBytes: markdownBuffer.length,
+      } else {
+        await this.db.createDocument({
+          id: documentId,
+          tenantId,
+          entityId,
+          originalFilename: displayName,
           mimeType: 'text/markdown',
+          sizeBytes: markdownBuffer.length,
+          contentHash,
           objectKey,
+          isPublic: true,
+          status: 'PENDING',
+          sourceType: crawlJobId ? 'WEBSITE_CRAWL' : 'WEBSITE_IMPORT',
         });
       }
+
+      const nextVersionNumber = latestVersion ? latestVersion.versionNumber + 1 : 1;
+      let createdVersion: any = null;
+      try {
+        createdVersion = await this.db.createDocumentVersion({
+          tenantId,
+          entityId,
+          documentId,
+          versionNumber: nextVersionNumber,
+          contentHash,
+          objectKey,
+          sizeBytes: markdownBuffer.length,
+        });
+      } catch {
+        // ignore
+      }
+
+      await this.db.updateJobDocumentStage(tenantId, jobId, documentId, 'UPLOADED_TO_S3', undefined, {
+        finalUrl: extractionResult.canonicalUrl,
+        canonicalUrl: extractionResult.canonicalUrl,
+        sourceType: 'webpage',
+        title: extractionResult.title,
+        sizeBytes: markdownBuffer.length,
+        mimeType: 'text/markdown',
+        objectKey,
+      });
 
       if (crawlJobId) {
         await this.db.updateCrawlPage(tenantId, crawlJobId, url, {
           status: 'uploaded',
           stage: 'UPLOADED_TO_S3',
-          documentId: finalDocId,
+          documentId: documentId,
           title: extractionResult.title,
           canonicalUrl: extractionResult.canonicalUrl,
           contentHash,
           objectKey,
           sizeBytes: markdownBuffer.length,
+          versionId: createdVersion?.id,
+          isUnchanged: false,
         });
         if (this.db.syncCrawlJobAggregates) {
           await this.db.syncCrawlJobAggregates(tenantId, crawlJobId);
@@ -472,17 +488,17 @@ export class DownloadWorker {
       // Downstream ingestion: inline if available, or forward to Ingestion Queue
       if (this.ingestionService) {
         try {
-          logger.info(`[DownloadWorker:Website] Executing inline ingestion for doc ${finalDocId}...`);
-          await this.ingestionService.processSingleDocument(tenantId, entityId, jobId, finalDocId);
-          logger.info(`[DownloadWorker:Website] Inline ingestion completed for doc ${finalDocId}`);
+          logger.info(`[DownloadWorker:Website] Executing inline ingestion for doc ${documentId}...`);
+          await this.ingestionService.processSingleDocument(tenantId, entityId, jobId, documentId, { versionId: createdVersion?.id });
+          logger.info(`[DownloadWorker:Website] Inline ingestion completed for doc ${documentId}`);
         } catch (ingestErr: any) {
-          logger.error(`[DownloadWorker:Website] Inline ingestion failed for doc ${finalDocId}:`, ingestErr);
+          logger.error(`[DownloadWorker:Website] Inline ingestion failed for doc ${documentId}:`, ingestErr);
           try {
             await this.queue.enqueueIngestionJob({
               tenantId,
               entityId,
               jobId,
-              documentId: finalDocId,
+              documentId: documentId,
               attempt: 1,
             });
           } catch (qErr: any) {
@@ -497,13 +513,13 @@ export class DownloadWorker {
           }
         }
       } else {
-        logger.info(`[DownloadWorker:Website] Forwarding document ${finalDocId} (job ${jobId}) to Ingestion Queue...`);
+        logger.info(`[DownloadWorker:Website] Forwarding document ${documentId} (job ${jobId}) to Ingestion Queue...`);
         try {
           await this.queue.enqueueIngestionJob({
             tenantId,
             entityId,
             jobId,
-            documentId: finalDocId,
+            documentId: documentId,
             attempt: 1,
           });
         } catch (qErr: any) {

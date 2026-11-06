@@ -211,6 +211,67 @@ export class IngestionApiClient {
   }
   getPortfolioDocuments = (ref: string) => this.getPortalDocuments(ref);
 
+  getDocumentViewUrl(portalReference: string, documentId: string): string {
+    return `${this.baseUrl}/v1/portals/${encodeURIComponent(portalReference)}/documents/${encodeURIComponent(documentId)}/content`;
+  }
+
+  async fetchDocumentContentBlob(
+    portalReference: string,
+    documentId: string
+  ): Promise<{ blob: Blob; url: string; text?: string; mimeType: string }> {
+    const url = this.getDocumentViewUrl(portalReference, documentId);
+    let response = await this.request(url, { method: 'GET' });
+    if (!response.ok && response.status === 404) {
+      response = await this.request(
+        `${this.baseUrl}/v1/portfolios/${encodeURIComponent(portalReference)}/documents/${encodeURIComponent(documentId)}/content`,
+        { method: 'GET' }
+      );
+    }
+
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err.error?.message || err.message || `Failed to fetch document content (HTTP ${response.status})`);
+    }
+
+    const contentType = response.headers.get('content-type') || 'application/octet-stream';
+    const blob = await response.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    let text: string | undefined;
+    if (
+      contentType.includes('text') ||
+      contentType.includes('markdown') ||
+      contentType.includes('json') ||
+      contentType.includes('csv')
+    ) {
+      text = await blob.text();
+    }
+    return { blob, url: objectUrl, text, mimeType: contentType };
+  }
+
+  async deletePortalDocument(
+    portalReference: string,
+    documentId: string
+  ): Promise<{ success: boolean; message: string }> {
+    let response = await this.request(
+      `${this.baseUrl}/v1/portals/${encodeURIComponent(portalReference)}/documents/${encodeURIComponent(documentId)}`,
+      { method: 'DELETE' }
+    );
+    if (!response.ok && response.status === 404) {
+      response = await this.request(
+        `${this.baseUrl}/v1/portfolios/${encodeURIComponent(portalReference)}/documents/${encodeURIComponent(documentId)}`,
+        { method: 'DELETE' }
+      );
+    }
+
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err.error?.message || err.message || `Failed to delete document`);
+    }
+
+    return response.json();
+  }
+  deletePortfolioDocument = (ref: string, docId: string) => this.deletePortalDocument(ref, docId);
+
   async submitPortalFiles(
     portalReference: string,
     files: File[]
@@ -328,7 +389,7 @@ export class IngestionApiClient {
    */
   async startPortalCrawl(
     portalReference: string,
-    data: { url: string; maxPages?: number; maxDepth?: number }
+    data: { url: string; maxPages?: number; maxDepth?: number; selectedUrls?: string[] }
   ): Promise<StartCrawlResponse> {
     let response = await this.request(
       `${this.baseUrl}/v1/portals/${encodeURIComponent(portalReference)}/crawls`,
@@ -457,6 +518,127 @@ export class IngestionApiClient {
     return response.json();
   }
   retryPortfolioCrawl = (ref: string, id: string, pageUrl?: string) => this.retryPortalCrawl(ref, id, pageUrl);
+
+  /**
+   * Refetch an existing website crawl to reconcile updated routes and content
+   */
+  async refetchPortalCrawl(
+    portalReference: string,
+    crawlJobId: string
+  ): Promise<StartCrawlResponse> {
+    let response = await this.request(
+      `${this.baseUrl}/v1/portals/${encodeURIComponent(portalReference)}/crawls/${encodeURIComponent(crawlJobId)}/refetch`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      }
+    );
+    if (!response.ok && response.status === 404) {
+      response = await this.request(
+        `${this.baseUrl}/v1/portfolios/${encodeURIComponent(portalReference)}/crawls/${encodeURIComponent(crawlJobId)}/refetch`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+        }
+      );
+    }
+
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err.error?.message || err.message || `Crawl refetch failed`);
+    }
+
+    return response.json();
+  }
+  refetchPortfolioCrawl = (ref: string, id: string) => this.refetchPortalCrawl(ref, id);
+
+  /**
+   * Delete an entire website crawl and all associated child pages, documents and storage (Phase 6)
+   */
+  async deletePortalCrawl(
+    portalReference: string,
+    crawlJobId: string
+  ): Promise<{ success: boolean; message: string }> {
+    let response = await this.request(
+      `${this.baseUrl}/v1/portals/${encodeURIComponent(portalReference)}/crawls/${encodeURIComponent(crawlJobId)}`,
+      { method: 'DELETE' }
+    );
+    if (!response.ok && response.status === 404) {
+      response = await this.request(
+        `${this.baseUrl}/v1/portfolios/${encodeURIComponent(portalReference)}/crawls/${encodeURIComponent(crawlJobId)}`,
+        { method: 'DELETE' }
+      );
+    }
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err.message || 'Failed to delete website crawl');
+    }
+    return response.json();
+  }
+  deletePortfolioCrawl = (ref: string, id: string) => this.deletePortalCrawl(ref, id);
+
+  /**
+   * Check for duplicate sources before ingestion (Phase 2)
+   */
+  async checkDuplicateSource(
+    portalReference: string,
+    params: { url?: string; filename?: string }
+  ): Promise<{ isDuplicate: boolean; type?: 'website' | 'file'; match?: any }> {
+    let response = await this.request(
+      `${this.baseUrl}/v1/portals/${encodeURIComponent(portalReference)}/check-duplicate`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(params),
+      }
+    );
+    if (!response.ok && response.status === 404) {
+      response = await this.request(
+        `${this.baseUrl}/v1/portfolios/${encodeURIComponent(portalReference)}/check-duplicate`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(params),
+        }
+      );
+    }
+    if (!response.ok) {
+      return { isDuplicate: false };
+    }
+    return response.json();
+  }
+
+  /**
+   * Discover available website routes without creating extraction jobs (Phase 3)
+   */
+  async discoverPortalWebsiteRoutes(
+    portalReference: string,
+    params: { url: string; maxPages?: number; maxDepth?: number }
+  ): Promise<{ rootUrl: string; discoveredCount: number; pages: Array<{ url: string; path: string; depth: number; source: string }> }> {
+    let response = await this.request(
+      `${this.baseUrl}/v1/portals/${encodeURIComponent(portalReference)}/crawls/discover`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(params),
+      }
+    );
+    if (!response.ok && response.status === 404) {
+      response = await this.request(
+        `${this.baseUrl}/v1/portfolios/${encodeURIComponent(portalReference)}/crawls/discover`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(params),
+        }
+      );
+    }
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err.message || 'Failed to discover website routes');
+    }
+    return response.json();
+  }
 
   async getPortalJobStatus(
     portalReference: string,
