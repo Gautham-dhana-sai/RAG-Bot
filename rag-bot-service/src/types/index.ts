@@ -44,6 +44,7 @@ export interface CrawlConfig {
   includePatterns?: string[];
   excludePatterns?: string[];
   respectRobotsTxt?: boolean;
+  selectedUrls?: string[];
 }
 
 export interface CrawlJob {
@@ -60,6 +61,11 @@ export interface CrawlJob {
   failedCount: number;
   skippedCount: number;
   errorSummary?: string;
+  lastRefetchedAt?: Date;
+  refetchStatus?: 'idle' | 'refetching' | 'completed' | 'failed';
+  unchangedCount?: number;
+  changedCount?: number;
+  newlyDiscoveredCount?: number;
   createdAt: Date;
   updatedAt: Date;
   completedAt?: Date;
@@ -83,6 +89,8 @@ export interface CrawlPage {
   retryCount: number;
   sizeBytes?: number;
   errorMessage?: string;
+  isUnchanged?: boolean;
+  versionId?: string;
   createdAt: Date;
   updatedAt: Date;
   completedAt?: Date;
@@ -154,6 +162,7 @@ export interface Document {
   sourceUrl?: string;
   stage?: string;
   sourceType?: string;
+  activeVersionId?: string;
   createdAt: Date;
   updatedAt: Date;
 }

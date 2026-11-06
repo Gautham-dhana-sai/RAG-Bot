@@ -750,6 +750,70 @@ export class PostgresDatabaseAdapter implements IDatabaseAdapter {
     };
   }
 
+  async getDocumentVersions(tenantId: string, documentId: string): Promise<DocumentVersion[]> {
+    if (!isValidUuid(tenantId) || !isValidUuid(documentId)) return [];
+    const res = await this.pool.query(
+      `SELECT * FROM document_versions WHERE tenant_id = $1 AND document_id = $2 ORDER BY version_number DESC`,
+      [tenantId, documentId]
+    );
+    return res.rows.map(r => ({
+      id: r.id,
+      tenantId: r.tenant_id,
+      entityId: r.entity_id,
+      documentId: r.document_id,
+      versionNumber: r.version_number,
+      contentHash: r.content_hash,
+      objectKey: r.object_key,
+      sizeBytes: Number(r.size_bytes),
+      processingVersion: r.processing_version,
+      createdAt: r.created_at,
+    }));
+  }
+
+  async getLatestDocumentVersion(tenantId: string, documentId: string): Promise<DocumentVersion | null> {
+    const versions = await this.getDocumentVersions(tenantId, documentId);
+    return versions[0] || null;
+  }
+
+  async activateDocumentVersion(
+    tenantId: string,
+    documentId: string,
+    versionId: string,
+    updates?: { contentHash?: string; objectKey?: string; sizeBytes?: number }
+  ): Promise<void> {
+    if (!isValidUuid(tenantId) || !isValidUuid(documentId) || !isValidUuid(versionId)) return;
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const setClauses = ['active_version_id = $3', "status = 'READY'", 'updated_at = NOW()'];
+      const values: any[] = [tenantId, documentId, versionId];
+
+      if (updates?.contentHash) {
+        values.push(updates.contentHash);
+        setClauses.push(`content_hash = $${values.length}`);
+      }
+      if (updates?.objectKey) {
+        values.push(updates.objectKey);
+        setClauses.push(`object_key = $${values.length}`);
+      }
+      if (updates?.sizeBytes !== undefined) {
+        values.push(updates.sizeBytes);
+        setClauses.push(`size_bytes = $${values.length}`);
+      }
+
+      await client.query(
+        `UPDATE documents SET ${setClauses.join(', ')} WHERE tenant_id = $1 AND id = $2`,
+        values
+      );
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
   // Ingestion Jobs
   async getJobById(tenantId: string, entityId: string, jobId: string): Promise<IngestionJob | null> {
     if (!isValidUuid(tenantId) || !isValidUuid(entityId) || !isValidUuid(jobId)) return null;
@@ -1170,7 +1234,9 @@ export class PostgresDatabaseAdapter implements IDatabaseAdapter {
          COUNT(*) FILTER (WHERE status IN ('fetching', 'extracting', 'uploaded', 'ingesting'))::int AS processing,
          COUNT(*) FILTER (WHERE status = 'completed')::int AS completed,
          COUNT(*) FILTER (WHERE status = 'failed')::int AS failed,
-         COUNT(*) FILTER (WHERE status = 'skipped')::int AS skipped
+         COUNT(*) FILTER (WHERE status = 'skipped')::int AS skipped,
+         COUNT(*) FILTER (WHERE is_unchanged = TRUE)::int AS unchanged,
+         COUNT(*) FILTER (WHERE status = 'completed' AND is_unchanged = FALSE)::int AS changed
        FROM crawl_pages
        WHERE tenant_id = $1 AND crawl_job_id = $2`,
       [tenantId, crawlJobId]
@@ -1183,6 +1249,8 @@ export class PostgresDatabaseAdapter implements IDatabaseAdapter {
     const completed = Number(counts.completed) || 0;
     const failed = Number(counts.failed) || 0;
     const skipped = Number(counts.skipped) || 0;
+    const unchanged = Number(counts.unchanged) || 0;
+    const changed = Number(counts.changed) || 0;
 
     const jobRes = await this.pool.query(
       `SELECT * FROM crawl_jobs WHERE tenant_id = $1 AND id = $2`,
@@ -1224,12 +1292,15 @@ export class PostgresDatabaseAdapter implements IDatabaseAdapter {
          completed_count = $4,
          failed_count = $5,
          skipped_count = $6,
-         status = $7,
+         unchanged_count = $7,
+         changed_count = $8,
+         status = $9,
+         refetch_status = CASE WHEN refetch_status = 'refetching' AND $2 = 0 AND $3 = 0 AND $1 > 0 THEN (CASE WHEN $5 = $1 THEN 'failed' ELSE 'completed' END) ELSE refetch_status END,
          updated_at = NOW()
          ${completedAtClause}
-       WHERE tenant_id = $8 AND id = $9
+       WHERE tenant_id = $10 AND id = $11
        RETURNING *`,
-      [total, queued, processing, completed, failed, skipped, newStatus, tenantId, crawlJobId]
+      [total, queued, processing, completed, failed, skipped, unchanged, changed, newStatus, tenantId, crawlJobId]
     );
 
     // 2. Synchronize the paired ingestion_jobs record so Ingestion Job Status tracks crawl lifecycle
@@ -1333,6 +1404,11 @@ export class PostgresDatabaseAdapter implements IDatabaseAdapter {
       failedCount: Number(r.failed_count || 0),
       skippedCount: Number(r.skipped_count || 0),
       errorSummary: r.error_summary || undefined,
+      lastRefetchedAt: r.last_refetched_at || undefined,
+      refetchStatus: r.refetch_status || 'idle',
+      unchangedCount: Number(r.unchanged_count || 0),
+      changedCount: Number(r.changed_count || 0),
+      newlyDiscoveredCount: Number(r.newly_discovered_count || 0),
       createdAt: r.created_at,
       updatedAt: r.updated_at,
       completedAt: r.completed_at || undefined,
@@ -1358,6 +1434,8 @@ export class PostgresDatabaseAdapter implements IDatabaseAdapter {
       retryCount: Number(r.retry_count || 0),
       sizeBytes: r.size_bytes ? Number(r.size_bytes) : undefined,
       errorMessage: r.error_message || undefined,
+      isUnchanged: Boolean(r.is_unchanged),
+      versionId: r.version_id || undefined,
       createdAt: r.created_at,
       updatedAt: r.updated_at,
       completedAt: r.completed_at || undefined,
@@ -1524,6 +1602,7 @@ export class PostgresDatabaseAdapter implements IDatabaseAdapter {
         JOIN documents d ON c.document_id = d.id AND c.tenant_id = d.tenant_id
         WHERE c.tenant_id = $1 AND c.entity_id = $2
           AND ($5::boolean = FALSE OR d.is_public = TRUE)
+          AND (d.active_version_id IS NULL OR c.version_id IS NULL OR c.version_id = d.active_version_id)
           AND c.embedding IS NOT NULL
         LIMIT 50
       ),
@@ -1535,6 +1614,7 @@ export class PostgresDatabaseAdapter implements IDatabaseAdapter {
         JOIN documents d ON c.document_id = d.id AND c.tenant_id = d.tenant_id
         WHERE c.tenant_id = $1 AND c.entity_id = $2
           AND ($5::boolean = FALSE OR d.is_public = TRUE)
+          AND (d.active_version_id IS NULL OR c.version_id IS NULL OR c.version_id = d.active_version_id)
           AND c.tsv_content @@ plainto_tsquery('english', $3)
         LIMIT 50
       ),

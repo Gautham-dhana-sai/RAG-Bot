@@ -295,6 +295,7 @@ export const PortalWorkspaceLayout: React.FC = memo(() => {
         {/* Right Column: Knowledge Base Sidebar */}
         <div className="workspace-col-side">
           <KnowledgeBaseSidebar
+            portalId={portal.id}
             documents={portalDocuments}
             crawls={portalCrawls}
             isLoading={isLoadingDocuments}

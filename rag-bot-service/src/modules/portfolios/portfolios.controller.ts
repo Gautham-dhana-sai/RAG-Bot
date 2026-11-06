@@ -6,6 +6,7 @@ import {
   Param,
   Body,
   Req,
+  Res,
   HttpCode,
   HttpStatus,
   Inject,
@@ -14,7 +15,7 @@ import {
 } from '@nestjs/common';
 import { AnyFilesInterceptor } from '@nestjs/platform-express';
 import { ApiTags, ApiOperation, ApiConsumes } from '@nestjs/swagger';
-import { Request } from 'express';
+import { Request, Response } from 'express';
 import { z } from 'zod';
 import { PortfoliosService } from './portfolios.service.js';
 import { BadRequestError } from '../../shared/errors.js';
@@ -66,6 +67,40 @@ export class PortfoliosController {
     @Param('portfolioReference') portfolioReference: string
   ) {
     return this.portfoliosService.listDocuments(req.authContext!, portfolioReference);
+  }
+
+  @Get([':portfolioReference/documents/:documentId/content', ':portfolioReference/documents/:documentId/view'])
+  @ApiOperation({ summary: 'View or stream document content securely' })
+  async viewDocumentContent(
+    @Req() req: Request,
+    @Res() res: Response,
+    @Param('portfolioReference') portfolioReference: string,
+    @Param('documentId') documentId: string
+  ) {
+    const { document, buffer } = await this.portfoliosService.getDocumentContent(
+      req.authContext!,
+      portfolioReference,
+      documentId
+    );
+    res.setHeader('Content-Type', document.mimeType || 'application/octet-stream');
+    res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(document.originalFilename)}"`);
+    res.setHeader('Content-Length', buffer.length);
+    res.send(buffer);
+  }
+
+  @Delete(':portfolioReference/documents/:documentId')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Delete a single document from a portfolio' })
+  async deleteDocument(
+    @Req() req: Request,
+    @Param('portfolioReference') portfolioReference: string,
+    @Param('documentId') documentId: string
+  ) {
+    return this.portfoliosService.deleteDocument(
+      req.authContext!,
+      portfolioReference,
+      documentId
+    );
   }
 
   @Post(':portfolioReference/ingestion-jobs')
@@ -215,7 +250,7 @@ export class PortfoliosController {
     return this.portfoliosService.getJobStatus(req.authContext!, portfolioReference, jobId);
   }
 
-  @Post(':portfolioReference/ask')
+  @Post([':portfolioReference/ask', ':portfolioReference/qa'])
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Ask question and verify portfolio retrieval' })
   async askQuestion(
@@ -252,11 +287,13 @@ export class PortfoliosController {
 
     const maxPages = body?.maxPages ? Number(body.maxPages) : undefined;
     const maxDepth = body?.maxDepth ? Number(body.maxDepth) : undefined;
+    const selectedUrls = Array.isArray(body?.selectedUrls) ? body.selectedUrls.filter((u: any) => typeof u === 'string' && u.trim().length > 0) : undefined;
 
     return this.portfoliosService.startWebsiteCrawl(req.authContext!, portfolioReference, {
       url: parsed.data,
       maxPages,
       maxDepth,
+      selectedUrls,
     });
   }
 
@@ -294,6 +331,54 @@ export class PortfoliosController {
       crawlJobId,
       body?.pageUrl || body?.url
     );
+  }
+
+  @Post([':portfolioReference/crawls/:crawlJobId/refetch', ':portfolioReference/crawl/:crawlJobId/refetch'])
+  @HttpCode(HttpStatus.ACCEPTED)
+  @ApiOperation({ summary: 'Initiate a content refetch for an existing website crawl' })
+  async refetchCrawl(
+    @Req() req: Request,
+    @Param('portfolioReference') portfolioReference: string,
+    @Param('crawlJobId') crawlJobId: string
+  ) {
+    return this.portfoliosService.refetchCrawl(
+      req.authContext!,
+      portfolioReference,
+      crawlJobId
+    );
+  }
+
+  @Post(':portfolioReference/check-duplicate')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Check for duplicate sources before ingestion' })
+  async checkDuplicate(
+    @Req() req: Request,
+    @Param('portfolioReference') portfolioReference: string,
+    @Body() body: { url?: string; filename?: string }
+  ) {
+    return this.portfoliosService.checkDuplicateSource(req.authContext!, portfolioReference, body);
+  }
+
+  @Post(':portfolioReference/crawls/discover')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Discover website routes without starting extraction' })
+  async discoverRoutes(
+    @Req() req: Request,
+    @Param('portfolioReference') portfolioReference: string,
+    @Body() body: { url: string; maxPages?: number; maxDepth?: number }
+  ) {
+    return this.portfoliosService.discoverWebsiteRoutes(req.authContext!, portfolioReference, body);
+  }
+
+  @Delete([':portfolioReference/crawls/:crawlJobId', ':portfolioReference/crawl/:crawlJobId'])
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Delete an entire website crawl and all associated pages' })
+  async deleteCrawl(
+    @Req() req: Request,
+    @Param('portfolioReference') portfolioReference: string,
+    @Param('crawlJobId') crawlJobId: string
+  ) {
+    return this.portfoliosService.deleteCrawlJob(req.authContext!, portfolioReference, crawlJobId);
   }
 
   @Delete(':portfolioReference')

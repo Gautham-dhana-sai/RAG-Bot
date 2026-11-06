@@ -175,6 +175,8 @@ export interface CrawlPage {
   depth: number;
   retryCount?: number;
   sizeBytes?: number;
+  isUnchanged?: boolean;
+  versionId?: string;
   errorMessage?: string;
   createdAt: string;
   updatedAt: string;
@@ -194,6 +196,11 @@ export interface CrawlJob {
   failedCount: number;
   skippedCount: number;
   errorSummary?: string;
+  lastRefetchedAt?: string;
+  refetchStatus?: 'idle' | 'refetching' | 'completed' | 'failed';
+  unchangedCount?: number;
+  changedCount?: number;
+  newlyDiscoveredCount?: number;
   pages?: CrawlPage[];
   createdAt: string;
   updatedAt: string;

@@ -300,7 +300,36 @@ describe('IngestionApiClient', () => {
       const res = await client.listPortalCrawls('port-1');
       expect(res.length).toBe(1);
       expect(res[0].rootUrl).toBe('https://example.com');
-      expect(res[0].completedCount).toBe(4);
+            expect(res[0].completedCount).toBe(4);
+    });
+
+    it('should trigger crawl refetch via client.refetchPortalCrawl', async () => {
+      client.setAuthToken('ragbot_sess_login999');
+      const mockRefetchResponse = {
+        crawlJobId: 'crawl-123',
+        jobId: 'job-refetch-1',
+        entityId: 'port-1',
+        tenantId: 't-1',
+        status: 'queued',
+        rootUrl: 'https://example.com',
+        statusUrl: '/v1/portals/port-1/crawls/crawl-123',
+        createdAt: '2026-11-05T10:00:00Z',
+      };
+
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => mockRefetchResponse,
+      });
+
+      const res = await client.refetchPortalCrawl('port-1', 'crawl-123');
+      expect(res.crawlJobId).toBe('crawl-123');
+      expect(res.status).toBe('queued');
+      expect(global.fetch).toHaveBeenCalledWith(
+        'http://localhost:3000/v1/portals/port-1/crawls/crawl-123/refetch',
+        expect.objectContaining({
+          method: 'POST',
+        })
+      );
     });
   });
 });

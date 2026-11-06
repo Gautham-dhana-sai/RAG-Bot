@@ -419,6 +419,37 @@ export class MemoryDatabaseAdapter implements IDatabaseAdapter {
     return version;
   }
 
+  async getDocumentVersions(tenantId: string, documentId: string): Promise<DocumentVersion[]> {
+    const list: DocumentVersion[] = [];
+    for (const v of this.documentVersions.values()) {
+      if (v.tenantId === tenantId && v.documentId === documentId) {
+        list.push(v);
+      }
+    }
+    return list.sort((a, b) => b.versionNumber - a.versionNumber);
+  }
+
+  async getLatestDocumentVersion(tenantId: string, documentId: string): Promise<DocumentVersion | null> {
+    const list = await this.getDocumentVersions(tenantId, documentId);
+    return list[0] || null;
+  }
+
+  async activateDocumentVersion(
+    tenantId: string,
+    documentId: string,
+    versionId: string,
+    updates?: { contentHash?: string; objectKey?: string; sizeBytes?: number }
+  ): Promise<void> {
+    const doc = this.documents.get(documentId);
+    if (!doc || doc.tenantId !== tenantId) return;
+    doc.activeVersionId = versionId;
+    doc.status = 'READY';
+    if (updates?.contentHash) doc.contentHash = updates.contentHash;
+    if (updates?.objectKey) doc.objectKey = updates.objectKey;
+    if (updates?.sizeBytes !== undefined) doc.sizeBytes = updates.sizeBytes;
+    doc.updatedAt = new Date();
+  }
+
   // Ingestion Jobs
   async getJobById(tenantId: string, entityId: string, jobId: string): Promise<IngestionJob | null> {
     const job = this.ingestionJobs.get(jobId);
@@ -519,6 +550,11 @@ export class MemoryDatabaseAdapter implements IDatabaseAdapter {
       rootUrl: data.rootUrl,
       status: 'queued',
       config: data.config || {},
+      lastRefetchedAt: undefined,
+      refetchStatus: 'idle',
+      unchangedCount: 0,
+      changedCount: 0,
+      newlyDiscoveredCount: 0,
       discoveredCount: 0,
       queuedCount: 0,
       processingCount: 0,
@@ -701,6 +737,13 @@ export class MemoryDatabaseAdapter implements IDatabaseAdapter {
     job.completedCount = completed;
     job.failedCount = failed;
     job.skippedCount = skipped;
+    const unchanged = pages.filter(p => p.isUnchanged === true).length;
+    const changed = pages.filter(p => p.status === 'completed' && !p.isUnchanged).length;
+    job.unchangedCount = unchanged;
+    job.changedCount = changed;
+    if (job.status !== 'discovering' && job.refetchStatus === 'refetching' && queued === 0 && processing === 0 && total > 0) {
+      job.refetchStatus = failed === total ? 'failed' : 'completed';
+    }
     job.updatedAt = new Date();
 
     const isTerminal =
@@ -858,6 +901,7 @@ export class MemoryDatabaseAdapter implements IDatabaseAdapter {
       const doc = this.documents.get(chunk.documentId);
       if (!doc) continue;
       if (isPublicOnly && !doc.isPublic) continue;
+      if (doc.activeVersionId && chunk.versionId && chunk.versionId !== doc.activeVersionId) continue;
       candidates.push(chunk);
     }
 

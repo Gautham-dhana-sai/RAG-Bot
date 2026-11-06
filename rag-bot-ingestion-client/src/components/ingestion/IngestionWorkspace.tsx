@@ -5,6 +5,7 @@ import { FileUploadSector } from './FileUploadSector';
 import { UrlImportSector } from './UrlImportSector';
 import { WebsiteImportSector } from './WebsiteImportSector';
 import { validateFileOrPhotoUrlClient } from '../../utils/validators';
+import { DuplicateConfirmModal } from '../common/DuplicateConfirmModal';
 
 interface IngestionWorkspaceProps {
   portal: Portal;
@@ -30,6 +31,11 @@ export const IngestionWorkspace: React.FC<IngestionWorkspaceProps> = memo(({
   const [selectedFiles, setSelectedFiles] = useState<FileItem[]>([]);
   const [isSubmittingFiles, setIsSubmittingFiles] = useState(false);
   const [fileError, setFileError] = useState<string | null>(null);
+  const [duplicateFileInfo, setDuplicateFileInfo] = useState<{
+    duplicates: { file: FileItem; existingDoc: DocumentInfo }[];
+    allFiles: FileItem[];
+  } | null>(null);
+  const [isReplacingDuplicate, setIsReplacingDuplicate] = useState(false);
 
   // URL import state
   const [urlInputs, setUrlInputs] = useState<string[]>(['']);
@@ -49,6 +55,25 @@ export const IngestionWorkspace: React.FC<IngestionWorkspaceProps> = memo(({
 
   const handleSubmitFiles = useCallback(async () => {
     if (selectedFiles.length === 0) return;
+
+    // Instant in-memory duplicate check (0ms latency, no blocking network call)
+    const existingDocs = portalDocuments || [];
+    const duplicates: { file: FileItem; existingDoc: DocumentInfo }[] = [];
+    for (const item of selectedFiles) {
+      const match = existingDocs.find(
+        d => d.originalFilename.trim().toLowerCase() === item.file.name.trim().toLowerCase()
+      );
+      if (match) {
+        duplicates.push({ file: item, existingDoc: match });
+      }
+    }
+
+    if (duplicates.length > 0) {
+      setDuplicateFileInfo({ duplicates, allFiles: selectedFiles });
+      return;
+    }
+
+    // No duplicates detected; proceed immediately with submission
     setIsSubmittingFiles(true);
     setFileError(null);
 
@@ -67,7 +92,70 @@ export const IngestionWorkspace: React.FC<IngestionWorkspaceProps> = memo(({
     } finally {
       setIsSubmittingFiles(false);
     }
-  }, [selectedFiles, getClient, portal.id, onJobStarted, onDocumentsUpdated]);
+  }, [selectedFiles, portalDocuments, getClient, portal.id, onJobStarted, onDocumentsUpdated]);
+
+  const handleReplaceDuplicateFiles = useCallback(async () => {
+    if (!duplicateFileInfo) return;
+    setIsReplacingDuplicate(true);
+    setFileError(null);
+
+    try {
+      const client = getClient();
+
+      // 1. Delete each duplicate existing file from storage (S3) and database (pgvector)
+      for (const item of duplicateFileInfo.duplicates) {
+        await client.deletePortalDocument(portal.id, item.existingDoc.id);
+      }
+
+      // 2. Upload the new files from the beginning
+      const rawFiles = duplicateFileInfo.allFiles.map(f => f.file);
+      const res = await client.submitPortalFiles(portal.id, rawFiles);
+      const jobId = res.jobId || res.id;
+      if (jobId) {
+        onJobStarted(jobId);
+      }
+      setSelectedFiles([]);
+      setDuplicateFileInfo(null);
+      onDocumentsUpdated();
+    } catch (err: any) {
+      setFileError(err.message || 'Failed to replace duplicate file(s).');
+    } finally {
+      setIsReplacingDuplicate(false);
+    }
+  }, [duplicateFileInfo, getClient, portal.id, onJobStarted, onDocumentsUpdated]);
+
+  const handleKeepExistingFiles = useCallback(async () => {
+    if (!duplicateFileInfo) return;
+    const dupNames = new Set(duplicateFileInfo.duplicates.map(d => d.file.file.name.trim().toLowerCase()));
+    const remainingFiles = duplicateFileInfo.allFiles.filter(f => !dupNames.has(f.file.name.trim().toLowerCase()));
+    setDuplicateFileInfo(null);
+
+    if (remainingFiles.length === 0) {
+      // All files were duplicates and user elected to keep existing without replacing
+      setSelectedFiles([]);
+      return;
+    }
+
+    // Submit remaining non-duplicate files
+    setIsSubmittingFiles(true);
+    setFileError(null);
+
+    try {
+      const client = getClient();
+      const rawFiles = remainingFiles.map(f => f.file);
+      const res = await client.submitPortalFiles(portal.id, rawFiles);
+      const jobId = res.jobId || res.id;
+      if (jobId) {
+        onJobStarted(jobId);
+      }
+      setSelectedFiles([]);
+      onDocumentsUpdated();
+    } catch (err: any) {
+      setFileError(err.message || 'File upload failed. Please try again.');
+    } finally {
+      setIsSubmittingFiles(false);
+    }
+  }, [duplicateFileInfo, getClient, portal.id, onJobStarted, onDocumentsUpdated]);
 
   // URL Handlers
   const handleAddUrlRow = useCallback(() => {
@@ -219,6 +307,33 @@ export const IngestionWorkspace: React.FC<IngestionWorkspaceProps> = memo(({
           onDocumentsUpdated={onDocumentsUpdated}
         />
       )}
+
+      {/* Duplicate File Confirmation Modal (Phase 2) */}
+      <DuplicateConfirmModal
+        isOpen={Boolean(duplicateFileInfo)}
+        sourceName={
+          duplicateFileInfo
+            ? duplicateFileInfo.duplicates.map(d => d.existingDoc.originalFilename).join(', ')
+            : ''
+        }
+        sourceType="file"
+        title={
+          duplicateFileInfo && duplicateFileInfo.duplicates.length > 1
+            ? 'Files Already Exist'
+            : 'File Already Exists'
+        }
+        description={
+          duplicateFileInfo && duplicateFileInfo.duplicates.length > 1
+            ? 'These files already exist in your Knowledge Base. Would you like to replace them?'
+            : 'This file already exists in your Knowledge Base. Would you like to replace it?'
+        }
+        confirmLabel="Replace"
+        confirmButtonClass="btn-danger"
+        isProcessing={isSubmittingFiles || isReplacingDuplicate}
+        onUpdateExisting={handleReplaceDuplicateFiles}
+        onKeepExisting={handleKeepExistingFiles}
+        onCancel={() => setDuplicateFileInfo(null)}
+      />
     </div>
   );
 });

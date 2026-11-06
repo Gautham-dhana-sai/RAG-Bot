@@ -560,7 +560,48 @@ body {
   transform: scale(0.95);
 }
 
+.btn-card-delete-icon:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
 .btn-card-delete-icon svg {
+  display: block;
+  stroke: currentColor;
+}
+
+.btn-card-refetch-icon {
+  background: transparent;
+  border: none;
+  color: var(--primary, #2563eb);
+  padding: 0.45rem;
+  border-radius: 6px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.18s ease;
+  line-height: 1;
+}
+
+.btn-card-refetch-icon:hover:not(:disabled) {
+  background: var(--primary-light, #eff6ff);
+  color: var(--primary-hover, #1d4ed8);
+  transform: scale(1.15);
+}
+
+.btn-card-refetch-icon:active:not(:disabled) {
+  transform: scale(0.95);
+}
+
+.btn-card-refetch-icon:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.btn-card-refetch-icon svg {
   display: block;
   stroke: currentColor;
 }

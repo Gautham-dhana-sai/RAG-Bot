@@ -9,6 +9,12 @@ interface QaHistoryThreadProps {
   pendingQuestion: string | null;
   retryingItemId?: string | null;
   onReEnquire?: (itemId: string, question: string) => void;
+  onViewDocument?: (doc: {
+    documentId: string;
+    documentTitle: string;
+    mimeType?: string;
+    pageNumber?: number;
+  }) => void;
 }
 
 export const QaHistoryThread: React.FC<QaHistoryThreadProps> = memo(({
@@ -17,6 +23,7 @@ export const QaHistoryThread: React.FC<QaHistoryThreadProps> = memo(({
   pendingQuestion,
   retryingItemId,
   onReEnquire,
+  onViewDocument,
 }) => {
   const [showAllQuestions, setShowAllQuestions] = useState(false);
 
@@ -114,7 +121,7 @@ export const QaHistoryThread: React.FC<QaHistoryThreadProps> = memo(({
                 </div>
                 <div className="qa-bubble-body qa-solution-body">
                   {formatAnswerText(cleanDocCitationTags(item.answer))}
-                  <QaCitationList citations={item.citations} />
+                  <QaCitationList citations={item.citations} onViewDocument={onViewDocument} />
                 </div>
               </div>
             )}
