@@ -3,9 +3,19 @@ export interface ChatMessage {
   content: string;
 }
 
+export interface TokenUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  isEstimated?: boolean;
+}
+
 export interface GenerationResult {
   text: string;
   finishReason?: string;
+  usage?: TokenUsage;
+  model?: string;
+  provider?: string;
 }
 
 export interface IAIAdapter {

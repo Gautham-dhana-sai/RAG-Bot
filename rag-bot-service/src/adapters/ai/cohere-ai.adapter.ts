@@ -152,9 +152,21 @@ Instructions: Answer strictly based on the evidence provided above. If the evide
 
       const json = (await response.json()) as any;
       const text = json?.message?.content?.[0]?.text || '';
+      const promptTokens = json?.meta?.tokens?.input_tokens ?? json?.meta?.billed_units?.input_tokens ?? Math.ceil(augmentedSystemPrompt.length / 4);
+      const completionTokens = json?.meta?.tokens?.output_tokens ?? json?.meta?.billed_units?.output_tokens ?? Math.ceil(text.length / 4);
+      const totalTokens = promptTokens + completionTokens;
+
       return {
         text,
         finishReason: json?.finish_reason || 'complete',
+        usage: {
+          promptTokens,
+          completionTokens,
+          totalTokens,
+          isEstimated: !(json?.meta?.tokens || json?.meta?.billed_units),
+        },
+        model: this.chatModel,
+        provider: 'cohere',
       };
     } catch (err: any) {
       logger.error('Cohere generateAnswer failed:', err);

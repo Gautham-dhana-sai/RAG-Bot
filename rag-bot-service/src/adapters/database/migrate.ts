@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
 import pg from 'pg';
 import { env } from '../../config/env.js';
 import { logger } from '../../shared/logger.js';
@@ -23,7 +24,18 @@ export async function applyMigrations(client: pg.Client | pg.PoolClient): Promis
     );
   `);
 
-  const migrationsDir = path.resolve(process.cwd(), 'migrations');
+  let migrationsDir = path.resolve(process.cwd(), 'migrations');
+  if (!fs.existsSync(migrationsDir)) {
+    migrationsDir = path.resolve(process.cwd(), 'rag-bot-service', 'migrations');
+  }
+  if (!fs.existsSync(migrationsDir)) {
+    try {
+      const __dirname = path.dirname(fileURLToPath(import.meta.url));
+      migrationsDir = path.resolve(__dirname, '../../../migrations');
+    } catch {
+      // fallback
+    }
+  }
   if (!fs.existsSync(migrationsDir)) {
     logger.warn(`Migrations directory not found at ${migrationsDir}`);
     return { applied: [], skipped: [] };

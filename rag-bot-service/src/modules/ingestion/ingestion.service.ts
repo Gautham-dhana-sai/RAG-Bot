@@ -15,6 +15,7 @@ import { generateUuid, computeSha256 } from '../../shared/utils.js';
 import { validateFileOrPhotoUrl } from '../../shared/endpoint-validator.js';
 import { env } from '../../config/env.js';
 import { logger } from '../../shared/logger.js';
+import { AnalyticsService } from '../analytics/analytics.service.js';
 
 export class IngestionService {
   constructor(
@@ -24,7 +25,8 @@ export class IngestionService {
     private documentsService: DocumentsService,
     private extractionService: ExtractionService,
     private chunkingService: ChunkingService,
-    private embeddingsService: EmbeddingsService
+    private embeddingsService: EmbeddingsService,
+    private analyticsService?: AnalyticsService
   ) {}
 
   /**
@@ -64,6 +66,24 @@ export class IngestionService {
 
       await this.db.createJobDocument(tenantId, job.id, document.id);
       documentIds.push(document.id);
+
+      if (this.analyticsService) {
+        const cls = this.analyticsService.classifySource({ filename: file.filename, mimeType: file.mimeType });
+        await this.analyticsService.recordEvent({
+          tenantId,
+          entityId,
+          eventType: 'SOURCE_SUBMISSION',
+          documentId: document.id,
+          ingestionJobId: job.id,
+          sourceCategory: cls.sourceCategory,
+          fileType: cls.fileType,
+          metadata: {
+            filename: file.filename,
+            sizeBytes: file.buffer.length,
+            isNewUpload: true,
+          },
+        });
+      }
     }
 
     // 3. Enqueue job for asynchronous processing
@@ -173,6 +193,23 @@ export class IngestionService {
         sourceUrl: url,
         stage: 'QUEUED_FOR_DOWNLOAD',
       });
+
+      if (this.analyticsService) {
+        const cls = this.analyticsService.classifySource({ url, filename });
+        await this.analyticsService.recordEvent({
+          tenantId,
+          entityId,
+          eventType: 'SOURCE_SUBMISSION',
+          documentId: resolvedDocId,
+          ingestionJobId: job.id,
+          sourceCategory: 'LINK',
+          fileType: cls.fileType,
+          metadata: {
+            url,
+            isNewUpload: true,
+          },
+        });
+      }
 
       await this.queue.enqueueUrlDownloadJob({
         tenantId,
@@ -301,6 +338,22 @@ export class IngestionService {
         stage: 'QUEUED_FOR_DOWNLOAD',
         downloadMetadata: { sourceType: 'webpage' },
       });
+
+      if (this.analyticsService) {
+        await this.analyticsService.recordEvent({
+          tenantId,
+          entityId,
+          eventType: 'SOURCE_SUBMISSION',
+          documentId: resolvedDocId,
+          ingestionJobId: job.id,
+          sourceCategory: 'WEBSITE',
+          fileType: 'website',
+          metadata: {
+            url,
+            isNewUpload: true,
+          },
+        });
+      }
 
       await this.queue.enqueueUrlDownloadJob({
         tenantId,
@@ -459,6 +512,33 @@ export class IngestionService {
         logger.error(`[IngestionWorker] [${i + 1}/${jobDocs.length}] Failed to process document ${jd.documentId}:`, err);
         await this.db.updateJobDocumentStatus(tenantId, jobId, jd.documentId, 'FAILED', errMsg);
         await this.db.updateDocumentStatus(tenantId, jd.documentId, 'FAILED', errMsg);
+
+        if (this.analyticsService) {
+          const doc = await this.documentsService.getDocument(tenantId, entityId, jd.documentId).catch(() => null);
+          const cls = this.analyticsService.classifySource({
+            filename: doc?.originalFilename,
+            mimeType: doc?.mimeType,
+            sourceType: doc?.sourceType,
+          });
+          const failureCat = this.analyticsService.classifyFailure(err, jd.stage);
+          await this.analyticsService.recordEvent({
+            tenantId,
+            entityId,
+            eventType: 'INGESTION_FAILURE',
+            documentId: jd.documentId,
+            ingestionJobId: jobId,
+            status: 'FAILED',
+            sourceCategory: cls.sourceCategory,
+            fileType: cls.fileType,
+            stage: jd.stage || 'PROCESSING',
+            failureCategory: failureCat,
+            metadata: {
+              errorMessage: errMsg,
+              filename: doc?.originalFilename || 'Document',
+            },
+          });
+        }
+
         if (this.db.getCrawlPageByDocumentId) {
           const crawlPage = await this.db.getCrawlPageByDocumentId(tenantId, jd.documentId);
           if (crawlPage) {
@@ -551,9 +631,13 @@ export class IngestionService {
     await this.db.updateDocumentStatus(tenantId, documentId, 'PROCESSING');
     await this.db.updateJobDocumentStatus(tenantId, jobId, documentId, 'PROCESSING');
 
+    const pipelineStart = Date.now();
+    let stageStart = Date.now();
+
     // 1. Download original file
     logger.info(`[DocPipeline] Step 1/6: Downloading file from storage (key: "${document.objectKey}")...`);
     const fileBuffer = await this.storage.downloadFile(document.objectKey);
+    const downloadMs = Date.now() - stageStart;
     logger.info(`[DocPipeline] Step 1/6: File downloaded successfully (${fileBuffer.length} bytes).`);
 
     // Ensure accurate sizeBytes in database if it was 0 or unrecorded
@@ -566,6 +650,7 @@ export class IngestionService {
     }
 
     // 2. Extract text & structure
+    stageStart = Date.now();
     logger.info(`[DocPipeline] Step 2/6: Extracting text from "${document.originalFilename}" (${document.mimeType})...`);
     const extraction = await this.extractionService.extractText(
       fileBuffer,
@@ -576,9 +661,11 @@ export class IngestionService {
     if (!extraction.text || extraction.text.trim().length === 0) {
       throw new Error('Extracted text is empty');
     }
+    const extractionMs = Date.now() - stageStart;
     logger.info(`[DocPipeline] Step 2/6: Extracted ${extraction.text.length} characters of text.`);
 
     // 3. Chunk extracted content
+    stageStart = Date.now();
     logger.info(`[DocPipeline] Step 3/6: Chunking extracted text...`);
     const jobDoc = await this.db.getJobDocumentByDocumentId(documentId);
     const isWebpage =
@@ -619,19 +706,24 @@ export class IngestionService {
     if (unindexedChunks.length === 0) {
       throw new Error('No chunks generated from extracted text');
     }
+    const chunkingMs = Date.now() - stageStart;
     logger.info(`[DocPipeline] Step 3/6: Generated ${unindexedChunks.length} chunks.`);
 
     // 4. Generate embeddings in batches
+    stageStart = Date.now();
     logger.info(`[DocPipeline] Step 4/6: Generating vector embeddings for ${unindexedChunks.length} chunks...`);
     const embeddedChunks = await this.embeddingsService.attachEmbeddings(unindexedChunks);
+    const embeddingMs = Date.now() - stageStart;
     logger.info(`[DocPipeline] Step 4/6: Embeddings generated successfully.`);
 
     // 5. Index chunks in database
+    stageStart = Date.now();
     logger.info(`[DocPipeline] Step 5/6: Storing chunks in PostgreSQL database...`);
     if (!targetVersionId) {
       await this.db.deleteChunksByDocument(tenantId, documentId);
     }
     await this.db.insertChunks(embeddedChunks);
+    const storageMs = Date.now() - stageStart;
     logger.info(`[DocPipeline] Step 5/6: Inserted ${embeddedChunks.length} chunks into database.`);
 
     // 6. Mark document as READY & activate version atomically
@@ -646,6 +738,56 @@ export class IngestionService {
       await this.db.updateDocumentStatus(tenantId, documentId, 'READY');
     }
     await this.db.updateJobDocumentStatus(tenantId, jobId, documentId, 'READY');
+
+    const totalDurationMs = Date.now() - pipelineStart;
+
+    if (this.analyticsService) {
+      const cls = this.analyticsService.classifySource({
+        filename: document.originalFilename,
+        mimeType: document.mimeType,
+        sourceType: document.sourceType,
+      });
+
+      const embedTokens = unindexedChunks.reduce(
+        (acc, c) => acc + Math.max(1, Math.ceil(c.chunkText.length / 4)),
+        0
+      );
+
+      await this.analyticsService.recordTokenLog({
+        tenantId,
+        entityId,
+        requestOrigin: 'PORTAL_UI',
+        operationType: 'EMBEDDING',
+        provider: 'openai',
+        modelName: 'text-embedding',
+        inputTokens: embedTokens,
+        outputTokens: 0,
+        totalTokens: embedTokens,
+        isEstimated: true,
+        durationMs: embeddingMs,
+      });
+
+      await this.analyticsService.recordEvent({
+        tenantId,
+        entityId,
+        eventType: 'INGESTION_COMPLETION',
+        documentId,
+        documentVersionId: targetVersionId,
+        ingestionJobId: jobId,
+        sourceCategory: cls.sourceCategory,
+        fileType: cls.fileType,
+        durationMs: totalDurationMs,
+        metadata: {
+          downloadMs,
+          extractionMs,
+          chunkingMs,
+          embeddingMs,
+          storageMs,
+          chunksCount: unindexedChunks.length,
+          filename: document.originalFilename,
+        },
+      });
+    }
 
     // Sync crawl page status and crawl job aggregates if document belongs to a website crawl
     if (this.db.getCrawlPageByDocumentId) {
@@ -738,6 +880,22 @@ export class IngestionService {
       rootUrl: normalizedRoot,
       config: config || {},
     });
+
+    if (this.analyticsService) {
+      await this.analyticsService.recordEvent({
+        tenantId,
+        entityId,
+        eventType: 'SOURCE_SUBMISSION',
+        crawlJobId: crawlJob.id,
+        ingestionJobId: crawlJob.id,
+        sourceCategory: 'WEBSITE',
+        fileType: 'website',
+        metadata: {
+          rootUrl: normalizedRoot,
+          isNewUpload: true,
+        },
+      });
+    }
 
     // 3. Enqueue crawl coordinator message to download queue
     await this.queue.enqueueUrlDownloadJob({

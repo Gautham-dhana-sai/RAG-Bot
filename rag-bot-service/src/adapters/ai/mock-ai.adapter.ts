@@ -139,9 +139,20 @@ export class MockAIAdapter implements IAIAdapter {
 
     const responseText = `Based on the provided portfolio documents:\n\n${sentences.join('\n\n')}`;
 
+    const promptTokens = Math.max(1, Math.ceil(evidenceContext.length / 4));
+    const completionTokens = Math.max(1, Math.ceil(responseText.length / 4));
+
     return {
       text: responseText,
       finishReason: 'stop',
+      usage: {
+        promptTokens,
+        completionTokens,
+        totalTokens: promptTokens + completionTokens,
+        isEstimated: false,
+      },
+      model: 'mock-model',
+      provider: 'mock',
     };
   }
 }

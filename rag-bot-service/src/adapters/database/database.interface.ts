@@ -16,6 +16,16 @@ import {
   CrawlJob,
   CrawlPage,
   CrawlConfig,
+  AnalyticsEvent,
+  AITokenLog,
+  AnalyticsFilterParams,
+  PortalAnalyticsOverview,
+  SourceAnalyticsData,
+  ProcessingPerformanceData,
+  AITokenConsumptionData,
+  ChatUsageData,
+  SourceActivityData,
+  FailureAnalyticsData,
 } from '../../types/index.js';
 
 export interface IDatabaseAdapter {
@@ -41,6 +51,7 @@ export interface IDatabaseAdapter {
   getEntityByPortfolioUrl(portfolioUrl: string): Promise<Entity | null>;
   getEntityByPortalUrl?(portalUrl: string): Promise<Entity | null>;
   getEntityByReference(tenantId: string, reference: string): Promise<Entity | null>;
+  getPublicEntityByReference?(reference: string): Promise<Entity | null>;
   getEntitiesByTenant(tenantId: string): Promise<Entity[]>;
   createEntity(data: { id?: string; tenantId: string; name: string; slug: string; description?: string; portalUrl?: string; portfolioUrl?: string; isPublic?: boolean }): Promise<Entity>;
   deleteEntity(tenantId: string, entityId: string): Promise<boolean>;
@@ -187,5 +198,16 @@ export interface IDatabaseAdapter {
   // Citations
   createCitations(citations: Array<Omit<AnswerCitation, 'id' | 'createdAt'>>): Promise<AnswerCitation[]>;
   getCitationsByMessage(messageId: string): Promise<AnswerCitation[]>;
+
+  // Analytics & AI Attribution
+  recordAnalyticsEvent(data: Omit<AnalyticsEvent, 'id' | 'createdAt'>): Promise<AnalyticsEvent>;
+  recordAITokenLog(data: Omit<AITokenLog, 'id' | 'createdAt'>): Promise<AITokenLog>;
+  getAnalyticsOverview(tenantId: string, entityId: string, params: AnalyticsFilterParams): Promise<PortalAnalyticsOverview>;
+  getSourceAnalytics(tenantId: string, entityId: string, params: AnalyticsFilterParams): Promise<SourceAnalyticsData>;
+  getProcessingPerformance(tenantId: string, entityId: string, params: AnalyticsFilterParams): Promise<ProcessingPerformanceData>;
+  getAITokenConsumption(tenantId: string, entityId: string, params: AnalyticsFilterParams): Promise<AITokenConsumptionData>;
+  getChatUsage(tenantId: string, entityId: string, params: AnalyticsFilterParams): Promise<ChatUsageData>;
+  getSourceActivity(tenantId: string, entityId: string, params: AnalyticsFilterParams): Promise<SourceActivityData>;
+  getFailureAnalytics(tenantId: string, entityId: string, params: AnalyticsFilterParams): Promise<FailureAnalyticsData>;
 }
 

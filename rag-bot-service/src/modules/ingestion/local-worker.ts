@@ -12,6 +12,7 @@ import { DocumentsService } from '../documents/documents.service.js';
 import { ExtractionService } from '../extraction/extraction.service.js';
 import { ChunkingService } from '../chunking/chunking.service.js';
 import { EmbeddingsService } from '../embeddings/embeddings.service.js';
+import { AnalyticsService } from '../analytics/analytics.service.js';
 import { IngestionService } from './ingestion.service.js';
 
 export async function startWorker(): Promise<void> {
@@ -47,6 +48,7 @@ export async function startWorker(): Promise<void> {
   const extractionService = new ExtractionService();
   const chunkingService = new ChunkingService(env.CHUNK_SIZE, env.CHUNK_OVERLAP);
   const embeddingsService = new EmbeddingsService(ai);
+  const analyticsService = new AnalyticsService(db);
 
   const ingestionService = new IngestionService(
     db,
@@ -55,7 +57,8 @@ export async function startWorker(): Promise<void> {
     docsService,
     extractionService,
     chunkingService,
-    embeddingsService
+    embeddingsService,
+    analyticsService
   );
 
   let running = true;

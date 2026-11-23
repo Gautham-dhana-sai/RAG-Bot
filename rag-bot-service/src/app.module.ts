@@ -7,6 +7,8 @@ import { DocumentsModule } from './modules/documents/documents.module.js';
 import { IngestionModule } from './modules/ingestion/ingestion.module.js';
 import { ConversationsModule } from './modules/conversations/conversations.module.js';
 import { PortfoliosModule } from './modules/portfolios/portfolios.module.js';
+import { AnalyticsModule } from './modules/analytics/analytics.module.js';
+import { AnalyticsService } from './modules/analytics/analytics.service.js';
 
 import { env, EnvConfig } from './config/env.js';
 import { IDatabaseAdapter } from './adapters/database/database.interface.js';
@@ -147,6 +149,7 @@ export class AppModule implements NestModule {
     const conversationsService = new ConversationsService(db);
     const generationService = new GenerationService(ai);
     const citationsService = new CitationsService(db);
+    const analyticsService = new AnalyticsService(db, authService);
 
     const ingestionService = new IngestionService(
       db,
@@ -155,7 +158,8 @@ export class AppModule implements NestModule {
       docsService,
       extractionService,
       chunkingService,
-      embeddingsService
+      embeddingsService,
+      analyticsService
     );
 
     const portfoliosService = new PortfoliosService(
@@ -164,7 +168,8 @@ export class AppModule implements NestModule {
       ingestionService,
       storage,
       retrievalService,
-      generationService
+      generationService,
+      analyticsService
     );
 
     // Hook local queue up to worker processor if local queue
@@ -193,6 +198,7 @@ export class AppModule implements NestModule {
       { provide: CitationsService, useValue: citationsService },
       { provide: IngestionService, useValue: ingestionService },
       { provide: PortfoliosService, useValue: portfoliosService },
+      { provide: AnalyticsService, useValue: analyticsService },
     ];
 
     return {
@@ -205,6 +211,7 @@ export class AppModule implements NestModule {
         IngestionModule,
         ConversationsModule,
         PortfoliosModule,
+        AnalyticsModule,
       ],
       providers,
       exports: providers,
