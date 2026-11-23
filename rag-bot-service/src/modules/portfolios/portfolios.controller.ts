@@ -263,7 +263,7 @@ export class PortfoliosController {
       throw new BadRequestError('Question is required');
     }
 
-    return this.portfoliosService.askQuestion(req.authContext!, portfolioReference, question.trim());
+    return this.portfoliosService.askQuestion(req.authContext!, portfolioReference, question.trim(), req);
   }
 
   @Post([':portfolioReference/crawls', ':portfolioReference/crawl'])

@@ -11,6 +11,7 @@ import { IngestionService } from '../ingestion/ingestion.service.js';
 import { UploadedFileItem } from '../ingestion/ingestion.types.js';
 import { RetrievalService } from '../retrieval/retrieval.service.js';
 import { GenerationService } from '../generation/generation.service.js';
+import { AnalyticsService } from '../analytics/analytics.service.js';
 
 export interface PortfolioSummary {
   id: string;
@@ -34,7 +35,8 @@ export class PortfoliosService {
     private ingestionService: IngestionService,
     private storage?: IStorageAdapter,
     private retrievalService?: RetrievalService,
-    private generationService?: GenerationService
+    private generationService?: GenerationService,
+    private analyticsService?: AnalyticsService
   ) {}
 
   /**
@@ -60,11 +62,45 @@ export class PortfoliosService {
   /**
    * Resolve an entity/portfolio by id, slug, or normalized portfolio URL
    */
-  async resolvePortfolio(auth: AuthContext, portfolioReference: string): Promise<{ tenantId: string; entity: Entity }> {
+  async resolvePortfolio(
+    auth: AuthContext,
+    portfolioReference: string,
+    allowPublic = false
+  ): Promise<{ tenantId: string; entity: Entity }> {
+    const decodedRef = decodeURIComponent(portfolioReference);
+
+    if (auth.isPublicVisitor || !auth.userId) {
+      if (!allowPublic) {
+        throw new UnauthorizedError('Authentication required to access portfolios');
+      }
+      // Look up public entity across database
+      if (this.db.getPublicEntityByReference) {
+        const ent = await this.db.getPublicEntityByReference(decodedRef);
+        if (ent && ent.isPublic) {
+          return { tenantId: ent.tenantId, entity: ent };
+        }
+      }
+      for (const tId of ['0164d75c-ad5a-4a6b-98a9-7ec4aacd0529', '8a34d0b1-382a-41e9-a3b0-6fd719cd2091']) {
+        const ent = await this.db.getEntityByReference(tId, decodedRef);
+        if (ent && ent.isPublic) {
+          return { tenantId: ent.tenantId, entity: ent };
+        }
+      }
+      try {
+        const norm = normalizePortfolioUrl(decodedRef);
+        const other = await this.db.getEntityByPortfolioUrl(norm);
+        if (other && other.isPublic) {
+          return { tenantId: other.tenantId, entity: other };
+        }
+      } catch {
+        // ignore
+      }
+      throw new NotFoundError('Portfolio', portfolioReference);
+    }
+
     const tenantId = await this.getAuthenticatedTenantId(auth);
 
     // 1. Try finding in user's tenant
-    const decodedRef = decodeURIComponent(portfolioReference);
     const entity = await this.db.getEntityByReference(tenantId, decodedRef);
     if (entity) {
       return { tenantId, entity };
@@ -230,7 +266,8 @@ export class PortfoliosService {
   async askQuestion(
     auth: AuthContext,
     portfolioReference: string,
-    question: string
+    question: string,
+    req?: any
   ): Promise<{
     answer: string;
     citations: any[];
@@ -239,7 +276,22 @@ export class PortfoliosService {
     portfolioId: string;
     tenantId: string;
   }> {
-    const { tenantId, entity } = await this.resolvePortfolio(auth, portfolioReference);
+    const startTime = Date.now();
+    const { tenantId, entity } = await this.resolvePortfolio(auth, portfolioReference, true);
+
+    const origin = this.analyticsService
+      ? this.analyticsService.resolveRequestOrigin(req, auth)
+      : (auth.isPublicVisitor || !auth.userId ? 'EXTERNAL_INTEGRATION' : 'PORTAL_UI');
+
+    if (this.analyticsService) {
+      await this.analyticsService.recordEvent({
+        tenantId,
+        entityId: entity.id,
+        eventType: 'CHAT_REQUEST_RECEIVED',
+        requestOrigin: origin,
+        metadata: { questionLength: question.length },
+      });
+    }
 
     const isPublicOnly = Boolean(auth.isPublicVisitor && !auth.isSuperadmin);
 
@@ -264,6 +316,7 @@ export class PortfoliosService {
       });
 
             // 1. Extract verified citations from any DOC-<chunkId> or CHUNK tags in the answer
+      // 1. Extract verified citations from any DOC-<chunkId> or CHUNK tags in the answer
       const citationRegex = /(?:DOC|CHUNK)[:\s-]*([a-zA-Z0-9_-]+)/gi;
       const citedIds = new Set<string>();
       let match;
@@ -347,6 +400,39 @@ export class PortfoliosService {
         .replace(/\n{3,}/g, '\n\n')
         .trim();
 
+      const durationMs = Date.now() - startTime;
+
+      if (this.analyticsService) {
+        if (result.usage) {
+          await this.analyticsService.recordTokenLog({
+            tenantId,
+            entityId: entity.id,
+            requestOrigin: origin,
+            operationType: 'CHAT_COMPLETION',
+            provider: result.provider || 'openai',
+            modelName: result.model || 'gemini-3.8-flash',
+            inputTokens: result.usage.promptTokens,
+            outputTokens: result.usage.completionTokens,
+            totalTokens: result.usage.totalTokens,
+            isEstimated: result.usage.isEstimated,
+            durationMs,
+          });
+        }
+
+        await this.analyticsService.recordEvent({
+          tenantId,
+          entityId: entity.id,
+          eventType: 'CHAT_RESPONSE_COMPLETED',
+          requestOrigin: origin,
+          durationMs,
+          metadata: {
+            retrievedCount: retrievedChunks.length,
+            insufficientEvidence: result.insufficientEvidence,
+            citationsCount: citations.length,
+          },
+        });
+      }
+
       return {
         answer: cleanAnswer,
         citations: citations.slice(0, 4),
@@ -403,7 +489,23 @@ export class PortfoliosService {
     documentId: string
   ): Promise<{ success: boolean; message: string }> {
     const { tenantId, entity } = await this.resolvePortfolio(auth, portfolioReference);
+    const doc = await this.documentsService.getDocument(tenantId, entity.id, documentId).catch(() => null);
     await this.documentsService.deleteDocument(tenantId, entity.id, documentId);
+
+    if (this.analyticsService) {
+      await this.analyticsService.recordEvent({
+        tenantId,
+        entityId: entity.id,
+        eventType: 'SOURCE_DELETION',
+        documentId,
+        sourceCategory: 'FILE',
+        metadata: {
+          filename: doc?.originalFilename || 'Document',
+          documentId,
+        },
+      });
+    }
+
     return {
       success: true,
       message: 'Document deleted successfully',
@@ -647,6 +749,16 @@ export class PortfoliosService {
     crawlJobId: string
   ): Promise<any> {
     const { tenantId, entity } = await this.resolvePortfolio(auth, portfolioReference);
+    if (this.analyticsService) {
+      await this.analyticsService.recordEvent({
+        tenantId,
+        entityId: entity.id,
+        eventType: 'WEBSITE_REFETCH',
+        crawlJobId,
+        sourceCategory: 'WEBSITE',
+        metadata: { crawlJobId },
+      });
+    }
     return this.ingestionService.refetchWebsiteCrawl({
       tenantId,
       entityId: entity.id,
@@ -758,6 +870,20 @@ export class PortfoliosService {
       await (this.db as any).deleteCrawlJob(tenantId, entity.id, crawlJobId);
     } else {
       await this.db.updateCrawlJob(tenantId, crawlJobId, { status: 'cancelled' });
+    }
+
+    if (this.analyticsService) {
+      await this.analyticsService.recordEvent({
+        tenantId,
+        entityId: entity.id,
+        eventType: 'SOURCE_DELETION',
+        crawlJobId,
+        sourceCategory: 'WEBSITE',
+        metadata: {
+          rootUrl: crawl.rootUrl,
+          crawlJobId,
+        },
+      });
     }
 
     return {

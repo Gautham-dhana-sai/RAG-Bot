@@ -85,6 +85,10 @@ coverage/
 .vitest/
 test-storage/
 */test-storage/
+test-storage*/
+*/test-storage*/
+test-*-storage/
+*/test-*-storage/
 memory-test-storage/
 */memory-test-storage/
 

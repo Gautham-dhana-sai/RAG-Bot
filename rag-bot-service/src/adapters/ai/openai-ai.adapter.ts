@@ -271,7 +271,21 @@ export class OpenAIAIAdapter implements IAIAdapter {
             const text = data.choices?.[0]?.message?.content || '';
             const finishReason = data.choices?.[0]?.finish_reason || 'stop';
             logger.info(`[OpenAIAIAdapter] [Round-Robin ${round}/${maxRounds}] Successfully received grounded answer from "${model}"`);
-            return { text, finishReason };
+            const promptTokens = data.usage?.prompt_tokens ?? Math.ceil(fullSystemPrompt.length / 4);
+            const completionTokens = data.usage?.completion_tokens ?? Math.ceil(text.length / 4);
+            const totalTokens = data.usage?.total_tokens ?? (promptTokens + completionTokens);
+            return {
+              text,
+              finishReason,
+              usage: {
+                promptTokens,
+                completionTokens,
+                totalTokens,
+                isEstimated: !data.usage,
+              },
+              model,
+              provider: this.baseUrl.includes('googleapis.com') ? 'gemini' : 'openai',
+            };
           }
 
           if (!errorText && !response.ok) {

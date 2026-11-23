@@ -1,4 +1,4 @@
-import { IAIAdapter, ChatMessage } from '../../adapters/ai/ai.interface.js';
+import { IAIAdapter, ChatMessage, TokenUsage } from '../../adapters/ai/ai.interface.js';
 import { PromptBuilder } from './prompt-builder.js';
 import { ScoredChunk } from '../../types/index.js';
 
@@ -11,7 +11,14 @@ export class GenerationService {
     question: string;
     conversationHistory: ChatMessage[];
     retrievedChunks: ScoredChunk[];
-  }): Promise<{ answer: string; insufficientEvidence: boolean; confidence: number }> {
+  }): Promise<{
+    answer: string;
+    insufficientEvidence: boolean;
+    confidence: number;
+    usage?: TokenUsage;
+    model?: string;
+    provider?: string;
+  }> {
     const { question, conversationHistory, retrievedChunks } = params;
 
     const evidenceContext = this.promptBuilder.buildEvidenceContext(retrievedChunks);
@@ -53,6 +60,9 @@ export class GenerationService {
       answer: result.text,
       insufficientEvidence,
       confidence: parseFloat(confidence.toFixed(2)),
+      usage: result.usage,
+      model: result.model,
+      provider: result.provider,
     };
   }
 }

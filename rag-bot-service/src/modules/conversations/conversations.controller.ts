@@ -1,4 +1,4 @@
-import { Controller, Post, Get, Param, Body, Req, HttpCode, HttpStatus, Inject } from '@nestjs/common';
+import { Controller, Post, Get, Param, Body, Req, HttpCode, HttpStatus, Inject, Optional } from '@nestjs/common';
 import { ApiTags, ApiOperation } from '@nestjs/swagger';
 import { Request } from 'express';
 import { z } from 'zod';
@@ -8,6 +8,7 @@ import { RetrievalService } from '../retrieval/retrieval.service.js';
 import { GenerationService } from '../generation/generation.service.js';
 import { CitationsService } from '../citations/citations.service.js';
 import { AuthService } from '../auth/auth.service.js';
+import { AnalyticsService } from '../analytics/analytics.service.js';
 import { BadRequestError } from '../../shared/errors.js';
 import { env } from '../../config/env.js';
 
@@ -20,7 +21,8 @@ export class ConversationsController {
     @Inject(RetrievalService) private readonly retrievalService: RetrievalService,
     @Inject(GenerationService) private readonly generationService: GenerationService,
     @Inject(CitationsService) private readonly citationsService: CitationsService,
-    @Inject(AuthService) private readonly authService: AuthService
+    @Inject(AuthService) private readonly authService: AuthService,
+    @Optional() @Inject(AnalyticsService) private readonly analyticsService?: AnalyticsService
   ) {}
 
   @Post('conversations')
@@ -156,11 +158,44 @@ export class ConversationsController {
 
     const startTime = Date.now();
 
+    const origin = this.analyticsService
+      ? this.analyticsService.resolveRequestOrigin(req, req.authContext)
+      : (req.authContext?.isPublicVisitor ? 'EXTERNAL_INTEGRATION' : 'PORTAL_UI');
+
+    if (this.analyticsService) {
+      await this.analyticsService.recordEvent({
+        tenantId: effectiveTenantId,
+        entityId: entity.id,
+        eventType: 'CHAT_REQUEST_RECEIVED',
+        requestOrigin: origin,
+        conversationId,
+        metadata: { questionLength: userQuestion.length },
+      });
+    }
+
     // 1. Fetch recent conversation history
     const history = await this.conversationsService.getRecentMessages(effectiveTenantId, conversationId, env.MAX_HISTORY_MESSAGES);
 
     // 2. Query Rewriter to resolve pronouns/references into standalone search query
     const standaloneQuery = await this.queryRewriter.rewrite(userQuestion, history);
+
+    if (this.analyticsService && standaloneQuery !== userQuestion) {
+      const rwTokens = Math.max(1, Math.ceil((userQuestion.length + 80) / 4));
+      await this.analyticsService.recordTokenLog({
+        tenantId: effectiveTenantId,
+        entityId: entity.id,
+        requestOrigin: origin,
+        operationType: 'QUERY_REWRITE',
+        provider: 'openai',
+        modelName: 'query-rewriter',
+        inputTokens: rwTokens,
+        outputTokens: Math.max(1, Math.ceil(standaloneQuery.length / 4)),
+        totalTokens: rwTokens + Math.max(1, Math.ceil(standaloneQuery.length / 4)),
+        isEstimated: true,
+        conversationId,
+        durationMs: 40,
+      });
+    }
 
     // 3. Save User Message to database
     await this.conversationsService.saveMessage({
@@ -217,6 +252,39 @@ export class ConversationsController {
     });
 
     const totalDurationMs = Date.now() - startTime;
+
+    if (this.analyticsService) {
+      if (generation.usage) {
+        await this.analyticsService.recordTokenLog({
+          tenantId: effectiveTenantId,
+          entityId: entity.id,
+          requestOrigin: origin,
+          operationType: 'CHAT_COMPLETION',
+          provider: generation.provider || 'openai',
+          modelName: generation.model || 'gemini-3.8-flash',
+          inputTokens: generation.usage.promptTokens,
+          outputTokens: generation.usage.completionTokens,
+          totalTokens: generation.usage.totalTokens,
+          isEstimated: generation.usage.isEstimated,
+          conversationId,
+          durationMs: totalDurationMs,
+        });
+      }
+
+      await this.analyticsService.recordEvent({
+        tenantId: effectiveTenantId,
+        entityId: entity.id,
+        eventType: 'CHAT_RESPONSE_COMPLETED',
+        requestOrigin: origin,
+        conversationId,
+        durationMs: totalDurationMs,
+        metadata: {
+          retrievedCount: retrievedChunks.length,
+          insufficientEvidence: generation.insufficientEvidence,
+          citationsCount: verifiedCitations.length,
+        },
+      });
+    }
 
     const cleanAnswerText = sanitizedAnswer
       .replace(/\[[^\]]*\bDOC-[^\]]*\]/gi, '')

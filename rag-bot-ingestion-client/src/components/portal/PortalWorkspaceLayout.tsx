@@ -9,6 +9,7 @@ import { DocumentList } from '../DocumentList';
 import { QaVerificationCard } from '../qa/QaVerificationCard';
 import { KnowledgeBaseSidebar } from '../knowledge-base/KnowledgeBaseSidebar';
 import { DeleteConfirmModal } from '../common/DeleteConfirmModal';
+import { PortalAnalyticsView } from '../analytics/PortalAnalyticsView';
 
 export const PortalWorkspaceLayout: React.FC = memo(() => {
   const { portalId } = useParams<{ portalId: string }>();
@@ -44,6 +45,7 @@ export const PortalWorkspaceLayout: React.FC = memo(() => {
   // Modal & deletion state
   const [isDeleting, setIsDeleting] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [activeTab, setActiveTab] = useState<'workspace' | 'analytics'>('workspace');
 
   // Active Job Tracking state
   const [currentJob, setCurrentJob] = useState<IngestionJob | null>(null);
@@ -252,57 +254,118 @@ export const PortalWorkspaceLayout: React.FC = memo(() => {
         </div>
       </div>
 
-      {/* Two Column Layout: All components accessible in one place! */}
-      <div className="workspace-columns">
-        {/* Left Column: Ingestion, Active Jobs, and Question Box */}
-        <div className="workspace-col-main">
-          <IngestionWorkspace
-            portal={portal}
-            onJobStarted={handleJobStarted}
-            onDocumentsUpdated={handleDocumentsUpdated}
-            portalDocuments={portalDocuments}
-            jobDocuments={jobDocuments}
-            onRetryUrl={handleRetryUrl}
-          />
+      {/* Portal Top Level Navigation Tabs */}
+      <div
+        className="portal-main-tabs"
+        style={{
+          display: 'flex',
+          gap: 10,
+          borderBottom: '2px solid var(--border, #e2e8f0)',
+          marginBottom: 24,
+        }}
+      >
+        <button
+          type="button"
+          onClick={() => setActiveTab('workspace')}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            padding: '10px 18px',
+            fontSize: 14,
+            fontWeight: activeTab === 'workspace' ? 600 : 500,
+            border: 'none',
+            borderBottom: activeTab === 'workspace' ? '2px solid var(--primary, #3b82f6)' : '2px solid transparent',
+            marginBottom: -2,
+            backgroundColor: 'transparent',
+            color: activeTab === 'workspace' ? 'var(--primary, #3b82f6)' : 'var(--text, #64748b)',
+            cursor: 'pointer',
+            transition: 'all 0.2s ease',
+          }}
+        >
+          <span>📁</span>
+          <span>Workspace & Knowledge Base</span>
+        </button>
 
-          {/* Active Ingestion Job Status */}
-          {currentJob && (
-            <JobStatusCard
-              job={currentJob}
-              statusUrl={`/v1/portals/${portal.id}/ingestion-jobs/${currentJob.id}`}
-              isPolling={isPollingJob}
-              onRefresh={() => startJobPolling(portal.id, currentJob.id)}
-            />
-          )}
+        <button
+          type="button"
+          onClick={() => setActiveTab('analytics')}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            padding: '10px 18px',
+            fontSize: 14,
+            fontWeight: activeTab === 'analytics' ? 600 : 500,
+            border: 'none',
+            borderBottom: activeTab === 'analytics' ? '2px solid var(--primary, #3b82f6)' : '2px solid transparent',
+            marginBottom: -2,
+            backgroundColor: 'transparent',
+            color: activeTab === 'analytics' ? 'var(--primary, #3b82f6)' : 'var(--text, #64748b)',
+            cursor: 'pointer',
+            transition: 'all 0.2s ease',
+          }}
+        >
+          <span>📊</span>
+          <span>Portal Analytics</span>
+        </button>
+      </div>
 
-          {/* Ingestion Job Document Breakdown: Only holds records user entered in this session, not recursive crawl routes */}
-          {userSessionDocuments.length > 0 && (
-            <DocumentList
-              documents={userSessionDocuments}
-              job={currentJob}
-              crawls={portalCrawls}
+      {activeTab === 'analytics' ? (
+        <PortalAnalyticsView portal={portal} apiClient={getClient()} />
+      ) : (
+        /* Two Column Layout: All components accessible in one place! */
+        <div className="workspace-columns">
+          {/* Left Column: Ingestion, Active Jobs, and Question Box */}
+          <div className="workspace-col-main">
+            <IngestionWorkspace
+              portal={portal}
+              onJobStarted={handleJobStarted}
+              onDocumentsUpdated={handleDocumentsUpdated}
+              portalDocuments={portalDocuments}
+              jobDocuments={jobDocuments}
               onRetryUrl={handleRetryUrl}
             />
-          )}
 
-          {/* Embedded Question Box - Visible when at least one document exists */}
-          <QaVerificationCard
-            portal={portal}
-            documentCount={portalDocuments.length}
-          />
-        </div>
+            {/* Active Ingestion Job Status */}
+            {currentJob && (
+              <JobStatusCard
+                job={currentJob}
+                statusUrl={`/v1/portals/${portal.id}/ingestion-jobs/${currentJob.id}`}
+                isPolling={isPollingJob}
+                onRefresh={() => startJobPolling(portal.id, currentJob.id)}
+              />
+            )}
 
-        {/* Right Column: Knowledge Base Sidebar */}
-        <div className="workspace-col-side">
-          <KnowledgeBaseSidebar
-            portalId={portal.id}
-            documents={portalDocuments}
-            crawls={portalCrawls}
-            isLoading={isLoadingDocuments}
-            onReload={handleDocumentsUpdated}
-          />
+            {/* Ingestion Job Document Breakdown: Only holds records user entered in this session, not recursive crawl routes */}
+            {userSessionDocuments.length > 0 && (
+              <DocumentList
+                documents={userSessionDocuments}
+                job={currentJob}
+                crawls={portalCrawls}
+                onRetryUrl={handleRetryUrl}
+              />
+            )}
+
+            {/* Embedded Question Box - Visible when at least one document exists */}
+            <QaVerificationCard
+              portal={portal}
+              documentCount={portalDocuments.length}
+            />
+          </div>
+
+          {/* Right Column: Knowledge Base Sidebar */}
+          <div className="workspace-col-side">
+            <KnowledgeBaseSidebar
+              portalId={portal.id}
+              documents={portalDocuments}
+              crawls={portalCrawls}
+              isLoading={isLoadingDocuments}
+              onReload={handleDocumentsUpdated}
+            />
+          </div>
         </div>
-      </div>
+      )}
 
       <DeleteConfirmModal
         portal={showDeleteModal ? portal : null}

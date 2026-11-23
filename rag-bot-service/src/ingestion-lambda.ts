@@ -10,6 +10,7 @@ import { DocumentsService } from './modules/documents/documents.service.js';
 import { ExtractionService } from './modules/extraction/extraction.service.js';
 import { ChunkingService } from './modules/chunking/chunking.service.js';
 import { EmbeddingsService } from './modules/embeddings/embeddings.service.js';
+import { AnalyticsService } from './modules/analytics/analytics.service.js';
 import { OpenAIAIAdapter } from './adapters/ai/openai-ai.adapter.js';
 import { MockAIAdapter } from './adapters/ai/mock-ai.adapter.js';
 import { CohereAIAdapter } from './adapters/ai/cohere-ai.adapter.js';
@@ -104,6 +105,7 @@ async function bootstrapIngestionWorker(): Promise<IngestionService> {
   const extractionService = new ExtractionService();
   const chunkingService = new ChunkingService(env.CHUNK_SIZE, env.CHUNK_OVERLAP);
   const embeddingsService = new EmbeddingsService(ai);
+  const analyticsService = new AnalyticsService(db);
 
   ingestionServiceInstance = new IngestionService(
     db,
@@ -112,7 +114,8 @@ async function bootstrapIngestionWorker(): Promise<IngestionService> {
     docsService,
     extractionService,
     chunkingService,
-    embeddingsService
+    embeddingsService,
+    analyticsService
   );
 
   logger.info('[Ingestion Lambda] Bootstrapped successfully.');

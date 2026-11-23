@@ -6,6 +6,14 @@ import {
   DocumentInfo,
   CrawlJob,
   StartCrawlResponse,
+  PortalAnalyticsOverview,
+  SourceAnalyticsData,
+  ProcessingPerformanceData,
+  AITokenConsumptionData,
+  ChatUsageData,
+  SourceActivityData,
+  FailureAnalyticsData,
+  AnalyticsFilterParams,
 } from './types';
 
 export class IngestionApiClient {
@@ -830,5 +838,110 @@ export class IngestionApiClient {
     }
 
     return qRes.json();
+  }
+
+  // --- Portal Analytics ---
+
+  private buildAnalyticsQuery(params?: AnalyticsFilterParams): string {
+    if (!params) return '';
+    const q = new URLSearchParams();
+    if (params.period) q.set('period', params.period);
+    if (params.startDate) q.set('startDate', params.startDate);
+    if (params.endDate) q.set('endDate', params.endDate);
+    if (params.page !== undefined) q.set('page', String(params.page));
+    if (params.limit !== undefined) q.set('limit', String(params.limit));
+    const str = q.toString();
+    return str ? `?${str}` : '';
+  }
+
+  async getPortalAnalyticsOverview(
+    portalRef: string,
+    params?: AnalyticsFilterParams
+  ): Promise<PortalAnalyticsOverview> {
+    const qs = this.buildAnalyticsQuery(params);
+    const res = await this.request(`${this.baseUrl}/v1/portals/${encodeURIComponent(portalRef)}/analytics/overview${qs}`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error?.message || err.message || `Failed to fetch analytics overview (HTTP ${res.status})`);
+    }
+    return res.json();
+  }
+
+  async getPortalSourceAnalytics(
+    portalRef: string,
+    params?: AnalyticsFilterParams
+  ): Promise<SourceAnalyticsData> {
+    const qs = this.buildAnalyticsQuery(params);
+    const res = await this.request(`${this.baseUrl}/v1/portals/${encodeURIComponent(portalRef)}/analytics/sources${qs}`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error?.message || err.message || `Failed to fetch source analytics (HTTP ${res.status})`);
+    }
+    return res.json();
+  }
+
+  async getPortalProcessingPerformance(
+    portalRef: string,
+    params?: AnalyticsFilterParams
+  ): Promise<ProcessingPerformanceData> {
+    const qs = this.buildAnalyticsQuery(params);
+    const res = await this.request(`${this.baseUrl}/v1/portals/${encodeURIComponent(portalRef)}/analytics/performance${qs}`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error?.message || err.message || `Failed to fetch processing performance (HTTP ${res.status})`);
+    }
+    return res.json();
+  }
+
+  async getPortalTokenConsumption(
+    portalRef: string,
+    params?: AnalyticsFilterParams
+  ): Promise<AITokenConsumptionData> {
+    const qs = this.buildAnalyticsQuery(params);
+    const res = await this.request(`${this.baseUrl}/v1/portals/${encodeURIComponent(portalRef)}/analytics/tokens${qs}`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error?.message || err.message || `Failed to fetch AI token consumption (HTTP ${res.status})`);
+    }
+    return res.json();
+  }
+
+  async getPortalChatUsage(
+    portalRef: string,
+    params?: AnalyticsFilterParams
+  ): Promise<ChatUsageData> {
+    const qs = this.buildAnalyticsQuery(params);
+    const res = await this.request(`${this.baseUrl}/v1/portals/${encodeURIComponent(portalRef)}/analytics/chat${qs}`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error?.message || err.message || `Failed to fetch chat usage analytics (HTTP ${res.status})`);
+    }
+    return res.json();
+  }
+
+  async getPortalSourceActivity(
+    portalRef: string,
+    params?: AnalyticsFilterParams
+  ): Promise<SourceActivityData> {
+    const qs = this.buildAnalyticsQuery(params);
+    const res = await this.request(`${this.baseUrl}/v1/portals/${encodeURIComponent(portalRef)}/analytics/activity${qs}`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error?.message || err.message || `Failed to fetch source activity (HTTP ${res.status})`);
+    }
+    return res.json();
+  }
+
+  async getPortalFailureAnalytics(
+    portalRef: string,
+    params?: AnalyticsFilterParams
+  ): Promise<FailureAnalyticsData> {
+    const qs = this.buildAnalyticsQuery(params);
+    const res = await this.request(`${this.baseUrl}/v1/portals/${encodeURIComponent(portalRef)}/analytics/failures${qs}`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error?.message || err.message || `Failed to fetch failure analytics (HTTP ${res.status})`);
+    }
+    return res.json();
   }
 }

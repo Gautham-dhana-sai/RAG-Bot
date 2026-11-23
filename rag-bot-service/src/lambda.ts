@@ -19,7 +19,7 @@ async function bootstrap() {
       const expressApp = app.getHttpAdapter().getInstance();
       serverlessExpressInstance = configure({ app: expressApp });
       ingestionServiceInstance = ingestionService;
-      downloadWorkerInstance = new DownloadWorker(db, storage, queue);
+      downloadWorkerInstance = new DownloadWorker(db, storage, queue, ingestionService);
       logger.info('[BOOTSTRAP] Bootstrap completed successfully.');
     } catch (bootstrapErr: any) {
       logger.error('[BOOTSTRAP_ERROR] Fatal error during bootstrap:', bootstrapErr);
