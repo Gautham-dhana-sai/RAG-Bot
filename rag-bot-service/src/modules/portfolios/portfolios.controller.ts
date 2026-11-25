@@ -10,6 +10,7 @@ import {
   HttpCode,
   HttpStatus,
   Inject,
+  Optional,
   UseInterceptors,
   UploadedFiles,
 } from '@nestjs/common';
@@ -20,13 +21,55 @@ import { z } from 'zod';
 import { PortfoliosService } from './portfolios.service.js';
 import { BadRequestError } from '../../shared/errors.js';
 import { UploadedFileItem } from '../ingestion/ingestion.types.js';
+import { ConversationsService } from '../conversations/conversations.service.js';
+import { QueryRewriter } from '../conversations/query-rewriter.js';
+import { RetrievalService } from '../retrieval/retrieval.service.js';
+import { GenerationService } from '../generation/generation.service.js';
+import { CitationsService } from '../citations/citations.service.js';
+import { AuthService } from '../auth/auth.service.js';
+import { AnalyticsService } from '../analytics/analytics.service.js';
+import { executeConversationTurn } from '../conversations/conversation-chat.helper.js';
 
 @ApiTags('Portals & Ingestion')
 @Controller(['v1/portals', 'v1/portfolios'])
 export class PortfoliosController {
   constructor(
-    @Inject(PortfoliosService) private readonly portfoliosService: PortfoliosService
+    @Inject(PortfoliosService) private readonly portfoliosService: PortfoliosService,
+    @Optional() @Inject(ConversationsService) private readonly conversationsService?: ConversationsService,
+    @Optional() @Inject(QueryRewriter) private readonly queryRewriter?: QueryRewriter,
+    @Optional() @Inject(RetrievalService) private readonly retrievalService?: RetrievalService,
+    @Optional() @Inject(GenerationService) private readonly generationService?: GenerationService,
+    @Optional() @Inject(CitationsService) private readonly citationsService?: CitationsService,
+    @Optional() @Inject(AuthService) private readonly authService?: AuthService,
+    @Optional() @Inject(AnalyticsService) private readonly analyticsService?: AnalyticsService
   ) {}
+
+  /**
+   * Extract the requesting portal URL from request headers (x-portal-url, Origin, or Referer).
+   */
+  private extractPortalUrlFromRequest(req: Request): string {
+    const headerPortalUrl = req.headers['x-portal-url'] as string | undefined;
+    const originHeader = req.headers['origin'] as string | undefined;
+    const refererHeader = req.headers['referer'] as string | undefined;
+
+    let refererOrigin: string | undefined;
+    if (refererHeader) {
+      try {
+        refererOrigin = new URL(refererHeader).origin;
+      } catch {
+        refererOrigin = refererHeader;
+      }
+    }
+
+    const portalUrl = headerPortalUrl || originHeader || refererOrigin;
+    if (!portalUrl || typeof portalUrl !== 'string' || !portalUrl.trim()) {
+      throw new BadRequestError(
+        'Could not identify portal URL from request headers (Origin, Referer, or x-portal-url)'
+      );
+    }
+
+    return portalUrl.trim();
+  }
 
   @Get()
   @ApiOperation({ summary: 'List all portfolios owned by the authenticated user' })
@@ -49,6 +92,83 @@ export class PortfoliosController {
     }
 
     return this.portfoliosService.createPortfolio(req.authContext!, parsed.data);
+  }
+
+  @Post('conversations')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({ summary: 'Create a conversation session identified by request Origin/Referer/x-portal-url' })
+  async createPortalConversation(
+    @Req() req: Request,
+    @Body() body?: any
+  ) {
+    const portalUrl = this.extractPortalUrlFromRequest(req);
+    const { tenantId, entity } = await this.portfoliosService.resolvePortfolio(req.authContext!, portalUrl, true);
+
+    const parsed = z.object({ title: z.string().optional() }).safeParse(body || {});
+    return this.conversationsService!.createConversation({
+      tenantId,
+      entityId: entity.id,
+      userId: req.authContext?.userId,
+      isPublic: entity.isPublic,
+      title: parsed.success && parsed.data.title ? parsed.data.title : 'Chat Session',
+    });
+  }
+
+  @Get('conversations')
+  @ApiOperation({ summary: 'List conversations for the portal identified by request Origin/Referer/x-portal-url' })
+  async listPortalConversations(@Req() req: Request) {
+    const portalUrl = this.extractPortalUrlFromRequest(req);
+    const { tenantId, entity } = await this.portfoliosService.resolvePortfolio(req.authContext!, portalUrl, true);
+    return this.conversationsService!.listConversations(tenantId, entity.id);
+  }
+
+  @Post('conversations/:conversationId/messages')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Send a message in a portal conversation identified by request Origin/Referer/x-portal-url' })
+  async sendPortalMessage(
+    @Req() req: Request,
+    @Param('conversationId') conversationId: string,
+    @Body() body?: any
+  ) {
+    const portalUrl = this.extractPortalUrlFromRequest(req);
+    const { tenantId, entity } = await this.portfoliosService.resolvePortfolio(req.authContext!, portalUrl, true);
+    await this.authService!.authorizeConversationAccess(req.authContext!, tenantId, entity.id, conversationId);
+
+    return executeConversationTurn({
+      req,
+      tenantId,
+      entityId: entity.id,
+      conversationId,
+      body,
+      conversationsService: this.conversationsService!,
+      queryRewriter: this.queryRewriter!,
+      retrievalService: this.retrievalService!,
+      generationService: this.generationService!,
+      citationsService: this.citationsService!,
+      analyticsService: this.analyticsService,
+    });
+  }
+
+  @Get('conversations/:conversationId/messages')
+  @ApiOperation({ summary: 'Get messages for a portal conversation identified by request Origin/Referer/x-portal-url' })
+  async getPortalMessages(
+    @Req() req: Request,
+    @Param('conversationId') conversationId: string
+  ) {
+    const portalUrl = this.extractPortalUrlFromRequest(req);
+    const { tenantId, entity } = await this.portfoliosService.resolvePortfolio(req.authContext!, portalUrl, true);
+    await this.authService!.authorizeConversationAccess(req.authContext!, tenantId, entity.id, conversationId);
+
+    const messages = await this.conversationsService!.getRecentMessages(tenantId, conversationId, 50);
+    return Promise.all(
+      messages.map(async m => {
+        if (m.senderRole === 'assistant') {
+          const citations = await this.citationsService!.getCitationsForMessage(m.id);
+          return { ...m, citations };
+        }
+        return m;
+      })
+    );
   }
 
   @Get(':portfolioReference')
@@ -248,6 +368,23 @@ export class PortfoliosController {
     @Param('jobId') jobId: string
   ) {
     return this.portfoliosService.getJobStatus(req.authContext!, portfolioReference, jobId);
+  }
+
+  @Post(['ask', 'qa'])
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Ask question using portal URL from request Origin/Referer/x-portal-url headers' })
+  async askQuestionByOrigin(
+    @Req() req: Request,
+    @Body() body: any
+  ) {
+    const portalUrl = this.extractPortalUrlFromRequest(req);
+
+    const question = body?.question || body?.content || '';
+    if (!question || typeof question !== 'string' || !question.trim()) {
+      throw new BadRequestError('Question is required');
+    }
+
+    return this.portfoliosService.askQuestion(req.authContext!, portalUrl, question.trim(), req);
   }
 
   @Post([':portfolioReference/ask', ':portfolioReference/qa'])
