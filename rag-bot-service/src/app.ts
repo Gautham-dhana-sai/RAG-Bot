@@ -67,29 +67,45 @@ export async function createNestApp(deps?: AppDependencies): Promise<{
   app.use(express.json({ limit: env.MAX_FILE_SIZE_BYTES }));
   app.use(express.urlencoded({ extended: true, limit: env.MAX_FILE_SIZE_BYTES }));
 
-  // CORS
-  const configuredOrigins = env.CORS_ORIGIN ? env.CORS_ORIGIN.split(',').map(s => s.trim()) : ['*'];
+  // CORS: open for integratable chatbot APIs; restricted to configured origins for all other APIs
+  const configuredOrigins = env.CORS_ORIGIN ? env.CORS_ORIGIN.split(',').map(s => s.trim()) : [];
+  const isIntegratableChatbotRoute = (reqPath: string): boolean => {
+    const cleanPath = reqPath.split('?')[0].toLowerCase();
+    return (
+      /^\/v1\/(portals|portfolios)\/(ask|qa|conversations)(\/|$)/.test(cleanPath) ||
+      /^\/v1\/(portals|portfolios)\/[^/]+\/(ask|qa)(\/|$)/.test(cleanPath) ||
+      /^\/v1\/tenants\/[^/]+\/entities\/[^/]+\/conversations(\/|$)/.test(cleanPath)
+    );
+  };
 
-  app.enableCors({
-    origin: (origin, callback) => {
-      if (!origin) {
-        return callback(null, true);
-      }
-      if (
-        configuredOrigins.includes('*') ||
-        configuredOrigins.includes(origin) ||
-        origin === env.CORS_ORIGIN ||
-        origin.startsWith('http://localhost:') ||
-        origin.startsWith('http://127.0.0.1:') ||
-        origin.endsWith('.vercel.app')
-      ) {
-        return callback(null, true);
-      }
-      return callback(null, true);
-    },
-    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin', 'X-Tenant-Id', 'X-Entity-Id'],
-    credentials: true,
+  app.enableCors((req: any, callback: (err: Error | null, options?: any) => void) => {
+    const reqPath = req.originalUrl || req.url || '';
+    if (isIntegratableChatbotRoute(reqPath)) {
+      return callback(null, {
+        origin: true,
+        methods: ['GET', 'POST', 'OPTIONS'],
+        credentials: true,
+      });
+    }
+
+    return callback(null, {
+      origin: (origin: string | undefined, originCb: (err: Error | null, allow?: boolean) => void) => {
+        if (
+          !origin ||
+          configuredOrigins.includes('*') ||
+          configuredOrigins.includes(origin) ||
+          origin.startsWith('http://localhost:') ||
+          origin.startsWith('http://127.0.0.1:') ||
+          origin.endsWith('.vercel.app')
+        ) {
+          return originCb(null, true);
+        }
+        return originCb(null, false);
+      },
+      methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+      allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin', 'X-Tenant-Id', 'X-Entity-Id'],
+      credentials: true,
+    });
   });
 
   // Global Exception Filter
