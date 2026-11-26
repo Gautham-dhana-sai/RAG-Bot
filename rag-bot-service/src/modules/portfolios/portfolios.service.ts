@@ -313,6 +313,7 @@ export class PortfoliosService {
         question,
         conversationHistory: [],
         retrievedChunks,
+        portalName: entity.name,
       });
 
             // 1. Extract verified citations from any DOC-<chunkId> or CHUNK tags in the answer

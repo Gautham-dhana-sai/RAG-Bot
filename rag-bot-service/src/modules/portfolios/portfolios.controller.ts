@@ -146,6 +146,8 @@ export class PortfoliosController {
       generationService: this.generationService!,
       citationsService: this.citationsService!,
       analyticsService: this.analyticsService,
+      portalName: entity.name,
+      includeCitations: false,
     });
   }
 
@@ -159,16 +161,7 @@ export class PortfoliosController {
     const { tenantId, entity } = await this.portfoliosService.resolvePortfolio(req.authContext!, portalUrl, true);
     await this.authService!.authorizeConversationAccess(req.authContext!, tenantId, entity.id, conversationId);
 
-    const messages = await this.conversationsService!.getRecentMessages(tenantId, conversationId, 50);
-    return Promise.all(
-      messages.map(async m => {
-        if (m.senderRole === 'assistant') {
-          const citations = await this.citationsService!.getCitationsForMessage(m.id);
-          return { ...m, citations };
-        }
-        return m;
-      })
-    );
+    return this.conversationsService!.getRecentMessages(tenantId, conversationId, 50);
   }
 
   @Get(':portfolioReference')
@@ -384,7 +377,9 @@ export class PortfoliosController {
       throw new BadRequestError('Question is required');
     }
 
-    return this.portfoliosService.askQuestion(req.authContext!, portalUrl, question.trim(), req);
+    const result = await this.portfoliosService.askQuestion(req.authContext!, portalUrl, question.trim(), req);
+    const { citations: _omitted, ...cleanResponse } = result;
+    return cleanResponse;
   }
 
   @Post([':portfolioReference/ask', ':portfolioReference/qa'])
