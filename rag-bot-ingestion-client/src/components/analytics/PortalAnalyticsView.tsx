@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { useParams, useNavigate, useLocation, useSearchParams } from 'react-router-dom';
 import {
   Portal,
   AnalyticsFilterParams,
@@ -26,13 +27,31 @@ interface PortalAnalyticsViewProps {
 }
 
 type AnalyticsSubTab = 'overview' | 'sources' | 'performance' | 'tokens' | 'chat' | 'activity' | 'failures';
+const VALID_SUBTABS: AnalyticsSubTab[] = ['overview', 'sources', 'performance', 'tokens', 'chat', 'activity', 'failures'];
+
+function parseSubTab(raw?: string | null): AnalyticsSubTab | null {
+  if (!raw) return null;
+  const cleaned = raw.replace(/^#\/?(analytics\/)?/i, '').toLowerCase() as AnalyticsSubTab;
+  return VALID_SUBTABS.includes(cleaned) ? cleaned : null;
+}
 
 export const PortalAnalyticsView: React.FC<PortalAnalyticsViewProps> = ({
   portal,
   apiClient,
 }) => {
+  const { portalId, subTab: pathSubTab } = useParams<{ portalId: string; tab?: string; subTab?: string }>();
+  const [searchParams] = useSearchParams();
+  const location = useLocation();
+  const navigate = useNavigate();
+
+  const resolvedSubTab: AnalyticsSubTab =
+    parseSubTab(pathSubTab) ||
+    parseSubTab(searchParams.get('subTab')) ||
+    parseSubTab(location.hash) ||
+    'overview';
+
   const [filters, setFilters] = useState<AnalyticsFilterParams>({ period: '30d' });
-  const [activeSubTab, setActiveSubTab] = useState<AnalyticsSubTab>('overview');
+  const [activeSubTab, setActiveSubTab] = useState<AnalyticsSubTab>(resolvedSubTab);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -48,7 +67,22 @@ export const PortalAnalyticsView: React.FC<PortalAnalyticsViewProps> = ({
   // Reference for API calls (ID or slug or portfolioUrl)
   const portalRef = portal.id || portal.slug || portal.portfolioUrl || portal.portalUrl;
 
-  // Clear previous tab's data when tab changes to decompose state
+  // Keep state synced when URL changes (e.g. browser back/forward or deep-link reload)
+  useEffect(() => {
+    if (resolvedSubTab !== activeSubTab) {
+      setOverview(null);
+      setSourceAnalytics(null);
+      setPerformance(null);
+      setTokenConsumption(null);
+      setChatUsage(null);
+      setSourceActivity(null);
+      setFailureAnalytics(null);
+      setError(null);
+      setActiveSubTab(resolvedSubTab);
+    }
+  }, [resolvedSubTab, activeSubTab]);
+
+  // Clear previous tab's data when tab changes to decompose state and update URL
   const handleTabChange = useCallback((newTab: AnalyticsSubTab) => {
     if (newTab === activeSubTab) return;
     // Decompose all previous tab states immediately
@@ -61,7 +95,12 @@ export const PortalAnalyticsView: React.FC<PortalAnalyticsViewProps> = ({
     setFailureAnalytics(null);
     setError(null);
     setActiveSubTab(newTab);
-  }, [activeSubTab]);
+
+    const targetPortalId = portalId || portal.id;
+    if (targetPortalId) {
+      navigate(`/portals/${targetPortalId}/analytics/${newTab}${location.search}`);
+    }
+  }, [activeSubTab, portalId, portal.id, navigate, location.search]);
 
   // Fetch fresh data from API for the active tab
   const loadActiveTabContent = useCallback(async () => {

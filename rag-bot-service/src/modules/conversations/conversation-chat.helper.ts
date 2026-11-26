@@ -25,6 +25,27 @@ export interface ExecuteConversationTurnParams {
   includeCitations?: boolean;
 }
 
+function cleanResponseText(raw: string): string {
+  return raw
+    .replace(/\[[^\]]*\bDOC-[^\]]*\]/gi, '')
+    .replace(/\([^)]*\bDOC-[^)]*\)/gi, '')
+    .replace(/\[[^\]]*\bCHUNK\b[^\]]*\]/gi, '')
+    .replace(/\[\s*DOC-[^\]]*$/gi, '')
+    .replace(/\(\s*DOC-[^)]*$/gi, '')
+    .replace(/\[\s*CHUNK[^\]]*$/gi, '')
+    .replace(/\bDOC-[a-zA-Z0-9_-]+/gi, '')
+    .replace(/\bCHUNK-[a-zA-Z0-9_-]+/gi, '')
+    .replace(/\[\s*\]/g, '')
+    .replace(/\(\s*\)/g, '')
+    .replace(/\[\s*$/g, '')
+    .replace(/\(\s*$/g, '')
+    .replace(/[ \t]+([.,!?;:])/g, '$1')
+    .replace(/[^\S\r\n]{2,}/g, ' ')
+    .replace(/([^\n])\s*(•|\s-\s)\s*/g, '$1\n• ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 /**
  * Shared RAG conversation turn execution used by both tenant-scoped
  * (`/v1/tenants/:tenantId/entities/:entityId/conversations/...`) and
@@ -50,6 +71,9 @@ export async function executeConversationTurn(params: ExecuteConversationTurnPar
   const schema = z.object({
     content: z.string().min(1).optional(),
     question: z.string().min(1).optional(),
+    clientMessageId: z.string().min(1).optional(),
+    idempotencyKey: z.string().min(1).optional(),
+    retry: z.boolean().optional(),
     topK: z.number().int().positive().optional(),
     retrievalMode: z.enum(['hybrid', 'dense', 'sparse']).optional(),
     minScore: z.number().optional(),
@@ -64,6 +88,12 @@ export async function executeConversationTurn(params: ExecuteConversationTurnPar
   }
 
   const userQuestion = (parsed.data.content || parsed.data.question || '').trim();
+  const clientMessageId =
+    parsed.data.clientMessageId ||
+    parsed.data.idempotencyKey ||
+    (req.headers['x-client-message-id'] as string | undefined) ||
+    (req.headers['x-idempotency-key'] as string | undefined);
+  const isRetry = Boolean(parsed.data.retry);
   const requestedTopK = parsed.data.topK || env.RETRIEVAL_TOP_K;
   const requestedMode = parsed.data.retrievalMode || 'hybrid';
   const requestedMinScore = parsed.data.minScore !== undefined ? parsed.data.minScore : env.RETRIEVAL_MIN_SCORE;
@@ -75,6 +105,56 @@ export async function executeConversationTurn(params: ExecuteConversationTurnPar
     ? analyticsService.resolveRequestOrigin(req, req.authContext)
     : (req.authContext?.isPublicVisitor ? 'EXTERNAL_INTEGRATION' : 'PORTAL_UI');
 
+  // 1. Fetch recent conversation history (enough to check idempotency/retry + prompt context)
+  const allRecent = await conversationsService.getRecentMessages(
+    tenantId,
+    conversationId,
+    Math.max(env.MAX_HISTORY_MESSAGES, 50)
+  );
+
+  // Deduplicate / handle retries using clientMessageId or retry=true
+  let existingUserIdx = -1;
+  if (clientMessageId) {
+    existingUserIdx = allRecent.findIndex(
+      m => m.senderRole === 'user' && m.metadata?.clientMessageId === clientMessageId
+    );
+  } else if (isRetry) {
+    for (let i = allRecent.length - 1; i >= 0; i--) {
+      if (allRecent[i].senderRole === 'user') {
+        if (allRecent[i].content.trim() === userQuestion) {
+          existingUserIdx = i;
+        }
+        break;
+      }
+    }
+  }
+
+  if (existingUserIdx !== -1) {
+    const existingAssistantMsg = allRecent
+      .slice(existingUserIdx + 1)
+      .find(m => m.senderRole === 'assistant');
+
+    if (existingAssistantMsg) {
+      const existingCitations = includeCitations
+        ? await citationsService.getCitationsForMessage(existingAssistantMsg.id)
+        : undefined;
+
+      return {
+        answer: cleanResponseText(existingAssistantMsg.content),
+        ...(includeCitations ? { citations: existingCitations || [] } : {}),
+        insufficientEvidence: existingAssistantMsg.insufficientEvidence,
+        confidence: existingAssistantMsg.confidenceScore ?? 0.85,
+        conversationId,
+        messageId: existingAssistantMsg.id,
+        deduplicated: true,
+      };
+    }
+  }
+
+  const history = (existingUserIdx !== -1 ? allRecent.slice(0, existingUserIdx) : allRecent).slice(
+    -env.MAX_HISTORY_MESSAGES
+  );
+
   if (analyticsService) {
     await analyticsService.recordEvent({
       tenantId,
@@ -82,12 +162,9 @@ export async function executeConversationTurn(params: ExecuteConversationTurnPar
       eventType: 'CHAT_REQUEST_RECEIVED',
       requestOrigin: origin,
       conversationId,
-      metadata: { questionLength: userQuestion.length },
+      metadata: { questionLength: userQuestion.length, isRetry: existingUserIdx !== -1 || isRetry },
     });
   }
-
-  // 1. Fetch recent conversation history
-  const history = await conversationsService.getRecentMessages(tenantId, conversationId, env.MAX_HISTORY_MESSAGES);
 
   // 2. Query Rewriter to resolve pronouns/references into standalone search query
   const standaloneQuery = await queryRewriter.rewrite(userQuestion, history);
@@ -110,15 +187,18 @@ export async function executeConversationTurn(params: ExecuteConversationTurnPar
     });
   }
 
-  // 3. Save User Message to database
-  await conversationsService.saveMessage({
-    tenantId,
-    entityId,
-    conversationId,
-    senderRole: 'user',
-    content: userQuestion,
-    rewrittenQuery: standaloneQuery !== userQuestion ? standaloneQuery : undefined,
-  });
+  // 3. Save User Message to database (skip if retrying a turn whose user message was already saved)
+  if (existingUserIdx === -1) {
+    await conversationsService.saveMessage({
+      tenantId,
+      entityId,
+      conversationId,
+      senderRole: 'user',
+      content: userQuestion,
+      rewrittenQuery: standaloneQuery !== userQuestion ? standaloneQuery : undefined,
+      metadata: clientMessageId ? { clientMessageId } : undefined,
+    });
+  }
 
   // 4. Hybrid Retrieval (Dense pgvector + Sparse tsvector fused via RRF)
   const isPublicOnly = Boolean(req.authContext?.isPublicVisitor && !req.authContext?.isSuperadmin);
@@ -200,24 +280,7 @@ export async function executeConversationTurn(params: ExecuteConversationTurnPar
     });
   }
 
-  const cleanAnswerText = sanitizedAnswer
-    .replace(/\[[^\]]*\bDOC-[^\]]*\]/gi, '')
-    .replace(/\([^)]*\bDOC-[^)]*\)/gi, '')
-    .replace(/\[[^\]]*\bCHUNK\b[^\]]*\]/gi, '')
-    .replace(/\[\s*DOC-[^\]]*$/gi, '')
-    .replace(/\(\s*DOC-[^)]*$/gi, '')
-    .replace(/\[\s*CHUNK[^\]]*$/gi, '')
-    .replace(/\bDOC-[a-zA-Z0-9_-]+/gi, '')
-    .replace(/\bCHUNK-[a-zA-Z0-9_-]+/gi, '')
-    .replace(/\[\s*\]/g, '')
-    .replace(/\(\s*\)/g, '')
-    .replace(/\[\s*$/g, '')
-    .replace(/\(\s*$/g, '')
-    .replace(/[ \t]+([.,!?;:])/g, '$1')
-    .replace(/[^\S\r\n]{2,}/g, ' ')
-    .replace(/([^\n])\s*(•|\s-\s)\s*/g, '$1\n• ')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
+  const cleanAnswerText = cleanResponseText(sanitizedAnswer);
 
   const responseBody: any = {
     answer: cleanAnswerText,
