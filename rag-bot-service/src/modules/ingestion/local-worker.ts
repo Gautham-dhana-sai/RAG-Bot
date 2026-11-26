@@ -16,7 +16,7 @@ import { AnalyticsService } from '../analytics/analytics.service.js';
 import { IngestionService } from './ingestion.service.js';
 
 export async function startWorker(): Promise<void> {
-  logger.info('Starting PersonaRAG Ingestion Worker...');
+  logger.info('Starting Open-Bot Ingestion Worker...');
 
   const db = env.DATABASE_URL
     ? new PostgresDatabaseAdapter(env.DATABASE_URL, env.DB_POOL_MAX, env.DB_USE_SSL)

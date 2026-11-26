@@ -115,7 +115,7 @@ export async function createNestApp(deps?: AppDependencies): Promise<{
   if (process.env.NODE_ENV !== 'test') {
     try {
       const config = new DocumentBuilder()
-        .setTitle('PersonaRAG API')
+        .setTitle('Open-Bot API')
         .setDescription('Multi-Tenant Retrieval-Augmented Generation Service API')
         .setVersion('1.0.0')
         .addBearerAuth()

@@ -81,7 +81,7 @@ export async function verifyLiveEndpoint(rawUrl: string, timeoutMs = 6000): Prom
           method: 'HEAD',
           signal: controller.signal,
           headers: {
-            'User-Agent': 'PersonaRAG-LiveCheck/1.0',
+            'User-Agent': 'OpenBot-LiveCheck/1.0',
             'Accept': '*/*',
           },
           redirect: 'follow',
@@ -91,7 +91,7 @@ export async function verifyLiveEndpoint(rawUrl: string, timeoutMs = 6000): Prom
           method: 'GET',
           signal: controller.signal,
           headers: {
-            'User-Agent': 'PersonaRAG-LiveCheck/1.0',
+            'User-Agent': 'OpenBot-LiveCheck/1.0',
             'Accept': '*/*',
           },
           redirect: 'follow',

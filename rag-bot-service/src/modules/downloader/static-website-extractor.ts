@@ -4,6 +4,7 @@ import { validateUrlForSsrf, redactUrlForLogging, SsrfValidationError } from '..
 import { computeSha256 } from '../../shared/utils.js';
 import { logger } from '../../shared/logger.js';
 import { env } from '../../config/env.js';
+import { extractSpaReadableMarkdown } from '../crawler/spa-extractor.helper.js';
 
 export interface WebsiteExtractionResult {
   sourceType: 'webpage';
@@ -58,8 +59,52 @@ export class StaticWebsiteExtractor {
     // 1. Fetch raw HTML with strict security controls
     const { html, finalUrl } = await this.fetchHtml(targetUrl);
 
-    // 2. Extract and parse static content
-    return this.extractFromHtml(html, finalUrl, targetUrl);
+    // 2. Extract and parse static content; fall back to SPA JS bundle extraction if static HTML is an empty shell
+    try {
+      return this.extractFromHtml(html, finalUrl, targetUrl);
+    } catch (err: any) {
+      if (err instanceof WebsiteExtractionError && err.isNoContent) {
+        const $ = cheerio.load(html);
+        const pageTitle = (
+          $('meta[property="og:title"]').attr('content') ||
+          $('title').first().text() ||
+          'Webpage'
+        )
+          .replace(/\s+/g, ' ')
+          .trim();
+        const metaDescription = (
+          $('meta[name="description"]').attr('content') ||
+          $('meta[property="og:description"]').attr('content') ||
+          ''
+        ).trim();
+
+        const spaExtracted = await extractSpaReadableMarkdown(html, finalUrl, pageTitle, metaDescription);
+        if (spaExtracted) {
+          logger.info(
+            `[StaticWebsiteExtractor] Extracted SPA bundle content (${spaExtracted.markdown.length} chars, ${spaExtracted.routes.length} routes) for ${safeLogUrl}`
+          );
+          return {
+            sourceType: 'webpage',
+            sourceUrl: targetUrl,
+            canonicalUrl: finalUrl,
+            title: pageTitle || 'Webpage',
+            contentType: 'text/markdown',
+            content: spaExtracted.markdown,
+            contentHash: computeSha256(Buffer.from(spaExtracted.markdown, 'utf-8')),
+            extractedAt: new Date().toISOString(),
+            links: spaExtracted.routes,
+            metadata: {
+              description: metaDescription || undefined,
+              headingsCount: spaExtracted.headingsCount,
+              paragraphsCount: spaExtracted.paragraphsCount,
+              textLength: spaExtracted.markdown.length,
+              isClientSideShell: true,
+            },
+          };
+        }
+      }
+      throw err;
+    }
   }
 
   /**
@@ -239,8 +284,9 @@ export class StaticWebsiteExtractor {
     const normalizedContent = markdownBlocks.join('\n').replace(/\n{3,}/g, '\n\n').trim();
 
     // 5. Detect empty content or JavaScript-only client-rendered single page applications
+    const bodyTextLength = $root.text().replace(/\s+/g, '').length;
     const visibleTextLength = normalizedContent.replace(/[#>\-\*`|\s]/g, '').length;
-    const isClientSideShell = visibleTextLength < 50;
+    const isClientSideShell = bodyTextLength < 50 || visibleTextLength < 50;
 
     if (isClientSideShell) {
       throw new WebsiteExtractionError(
@@ -306,7 +352,7 @@ export class StaticWebsiteExtractor {
           redirect: 'manual',
           signal: controller.signal,
           headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) PersonaRAG-Crawler/1.0 (+https://personarag.ai)',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) OpenBot-Crawler/1.0 (+https://open-bot.ai)',
             'Accept': 'text/html,application/xhtml+xml;q=0.9,*/*;q=0.8',
             'Accept-Language': 'en-US,en;q=0.9',
           },

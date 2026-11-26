@@ -70,7 +70,7 @@ export class SitemapParser {
         method: 'GET',
         signal: controller.signal,
         headers: {
-          'User-Agent': 'PersonaRAG-Crawler/1.0 (+https://personarag.ai)',
+          'User-Agent': 'OpenBot-Crawler/1.0 (+https://open-bot.ai)',
           'Accept': 'application/xml, text/xml, */*',
         },
       });

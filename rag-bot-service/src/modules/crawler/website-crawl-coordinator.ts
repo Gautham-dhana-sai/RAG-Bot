@@ -11,6 +11,7 @@ import { buildS3ObjectKey } from '../documents/documents.service.js';
 import { computeSha256, generateUuid } from '../../shared/utils.js';
 import { logger } from '../../shared/logger.js';
 import { env } from '../../config/env.js';
+import { extractSpaRoutesFromHtml } from './spa-extractor.helper.js';
 
 export interface DiscoveryResult {
   crawlJobId: string;
@@ -60,94 +61,110 @@ export class WebsiteCrawlCoordinator {
     await this.db.updateCrawlJob(tenantId, crawlJobId, { status: 'discovering' });
     await this.db.updateJobStatus(tenantId, crawlJobId, 'PROCESSING');
 
-    // 2. Fetch robots.txt
-    let robots: RobotsInfo = { sitemaps: [], disallowedPaths: [], allowedPaths: [] };
-    if (respectRobots) {
-      try {
-        robots = await this.robotsParser.fetchAndParse(rootUrl);
-        logger.info(`[CrawlCoordinator] Robots.txt for ${rootUrl}: ${robots.sitemaps.length} sitemap(s), ${robots.disallowedPaths.length} disallow rule(s)`);
-      } catch (err: any) {
-        logger.warn(`[CrawlCoordinator] Error fetching robots.txt: ${err.message}`);
-      }
-    }
-
     const discoveredMap = new Map<string, { url: string; depth: number; source: 'root' | 'sitemap' | 'link' }>();
-
-    // Add root URL itself (depth 0)
     const normalizedRoot = normalizeUrl(rootUrl);
-    if (normalizedRoot) {
-      discoveredMap.set(normalizedRoot, { url: normalizedRoot, depth: 0, source: 'root' });
-    }
 
-    // 3. Discover URLs from Sitemaps
-    try {
-      const sitemapUrls = await this.sitemapParser.discoverUrls(rootUrl, robots.sitemaps, maxPages);
-      for (const smUrl of sitemapUrls) {
+    // If caller already selected exact URLs (from discoverRoutesOnly), persist them directly
+    // without re-running discovery (which could time out or miss SPA/dynamic routes).
+    if (config?.selectedUrls && config.selectedUrls.length > 0) {
+      for (const rawSelected of config.selectedUrls) {
         if (discoveredMap.size >= maxPages) break;
-        if (!discoveredMap.has(smUrl)) {
-          if (!respectRobots || this.robotsParser.isPathAllowed(new URL(smUrl).pathname, robots)) {
-            discoveredMap.set(smUrl, { url: smUrl, depth: 1, source: 'sitemap' });
-          }
+        const normSelected = normalizeUrl(rawSelected, normalizedRoot || rootUrl);
+        if (!normSelected) continue;
+        if (!isAllowedOrigin(normSelected, rootUrl, allowedOrigins)) continue;
+        if (isExcludedUrl(normSelected).isExcluded) continue;
+        if (!discoveredMap.has(normSelected)) {
+          const isRoot = normalizedRoot && normSelected === normalizedRoot;
+          discoveredMap.set(normSelected, {
+            url: normSelected,
+            depth: isRoot ? 0 : 1,
+            source: isRoot ? 'root' : 'link',
+          });
         }
       }
-      logger.info(`[CrawlCoordinator] Sitemap discovery yielded ${sitemapUrls.length} URL(s)`);
-    } catch (smErr: any) {
-      logger.warn(`[CrawlCoordinator] Sitemap discovery encountered error: ${smErr.message}`);
-    }
-
-    // 4. Discover Internal Links via Static HTML (Breadth-First Search up to maxDepth)
-    const queueToCrawl: Array<{ url: string; depth: number }> = [];
-    if (normalizedRoot) {
-      queueToCrawl.push({ url: normalizedRoot, depth: 0 });
-    }
-
-    // Also seed queue with first few sitemap URLs for link expansion if needed
-    for (const item of discoveredMap.values()) {
-      if (item.source === 'sitemap' && queueToCrawl.length < 5) {
-        queueToCrawl.push({ url: item.url, depth: 1 });
+    } else {
+      // 2. Fetch robots.txt
+      let robots: RobotsInfo = { sitemaps: [], disallowedPaths: [], allowedPaths: [] };
+      if (respectRobots) {
+        try {
+          robots = await this.robotsParser.fetchAndParse(rootUrl);
+          logger.info(`[CrawlCoordinator] Robots.txt for ${rootUrl}: ${robots.sitemaps.length} sitemap(s), ${robots.disallowedPaths.length} disallow rule(s)`);
+        } catch (err: any) {
+          logger.warn(`[CrawlCoordinator] Error fetching robots.txt: ${err.message}`);
+        }
       }
-    }
 
-    const visitedHtmlUrls = new Set<string>();
+      // Add root URL itself (depth 0)
+      if (normalizedRoot) {
+        discoveredMap.set(normalizedRoot, { url: normalizedRoot, depth: 0, source: 'root' });
+      }
 
-    while (queueToCrawl.length > 0 && discoveredMap.size < maxPages) {
-      const current = queueToCrawl.shift()!;
-      if (visitedHtmlUrls.has(current.url)) continue;
-      visitedHtmlUrls.add(current.url);
-
-      if (current.depth >= maxDepth) continue;
-
+      // 3. Discover URLs from Sitemaps
       try {
-        const links = await this.extractLinksFromPage(current.url);
-        for (const rawLink of links) {
+        const sitemapUrls = await this.sitemapParser.discoverUrls(rootUrl, robots.sitemaps, maxPages);
+        for (const smUrl of sitemapUrls) {
           if (discoveredMap.size >= maxPages) break;
-
-          const norm = normalizeUrl(rawLink, current.url);
-          if (!norm) continue;
-
-          // Boundary checks
-          if (!isAllowedOrigin(norm, rootUrl, allowedOrigins)) continue;
-          if (isExcludedUrl(norm).isExcluded) continue;
-          if (respectRobots && !this.robotsParser.isPathAllowed(new URL(norm).pathname, robots)) continue;
-
-          if (!discoveredMap.has(norm)) {
-            const nextDepth = current.depth + 1;
-            discoveredMap.set(norm, { url: norm, depth: nextDepth, source: 'link' });
-            if (nextDepth < maxDepth) {
-              queueToCrawl.push({ url: norm, depth: nextDepth });
+          if (!discoveredMap.has(smUrl)) {
+            if (!respectRobots || this.robotsParser.isPathAllowed(new URL(smUrl).pathname, robots)) {
+              discoveredMap.set(smUrl, { url: smUrl, depth: 1, source: 'sitemap' });
             }
           }
         }
-      } catch (pageErr: any) {
-        logger.debug(`[CrawlCoordinator] Could not extract links from ${current.url}: ${pageErr.message}`);
+        logger.info(`[CrawlCoordinator] Sitemap discovery yielded ${sitemapUrls.length} URL(s)`);
+      } catch (smErr: any) {
+        logger.warn(`[CrawlCoordinator] Sitemap discovery encountered error: ${smErr.message}`);
+      }
+
+      // 4. Discover Internal Links via Static HTML / SPA Bundles (Breadth-First Search up to maxDepth)
+      const queueToCrawl: Array<{ url: string; depth: number }> = [];
+      if (normalizedRoot) {
+        queueToCrawl.push({ url: normalizedRoot, depth: 0 });
+      }
+
+      // Also seed queue with first few sitemap URLs for link expansion if needed
+      for (const item of discoveredMap.values()) {
+        if (item.source === 'sitemap' && queueToCrawl.length < 5) {
+          queueToCrawl.push({ url: item.url, depth: 1 });
+        }
+      }
+
+      const visitedHtmlUrls = new Set<string>();
+
+      while (queueToCrawl.length > 0 && discoveredMap.size < maxPages) {
+        const current = queueToCrawl.shift()!;
+        if (visitedHtmlUrls.has(current.url)) continue;
+        visitedHtmlUrls.add(current.url);
+
+        if (current.depth >= maxDepth) continue;
+
+        try {
+          const links = await this.extractLinksFromPage(current.url);
+          for (const rawLink of links) {
+            if (discoveredMap.size >= maxPages) break;
+
+            const norm = normalizeUrl(rawLink, current.url);
+            if (!norm) continue;
+
+            // Boundary checks
+            if (!isAllowedOrigin(norm, rootUrl, allowedOrigins)) continue;
+            if (isExcludedUrl(norm).isExcluded) continue;
+            if (respectRobots && !this.robotsParser.isPathAllowed(new URL(norm).pathname, robots)) continue;
+
+            if (!discoveredMap.has(norm)) {
+              const nextDepth = current.depth + 1;
+              discoveredMap.set(norm, { url: norm, depth: nextDepth, source: 'link' });
+              if (nextDepth < maxDepth) {
+                queueToCrawl.push({ url: norm, depth: nextDepth });
+              }
+            }
+          }
+        } catch (pageErr: any) {
+          logger.debug(`[CrawlCoordinator] Could not extract links from ${current.url}: ${pageErr.message}`);
+        }
       }
     }
 
-    let pagesToPersist = Array.from(discoveredMap.values()).slice(0, maxPages);
-    if (config?.selectedUrls && config.selectedUrls.length > 0) {
-      const selectedSet = new Set(config.selectedUrls.map(u => normalizeUrl(u)).filter(Boolean));
-      pagesToPersist = pagesToPersist.filter(p => selectedSet.has(p.url) || selectedSet.has(normalizeUrl(p.url)));
-    }
+    const pagesToPersist = Array.from(discoveredMap.values()).slice(0, maxPages);
     logger.info(`[CrawlCoordinator] Total distinct pages discovered: ${pagesToPersist.length}`);
 
     // 5. Persist crawl_pages and create documents & ingestion_job_documents
@@ -294,7 +311,7 @@ export class WebsiteCrawlCoordinator {
         method: 'GET',
         signal: controller.signal,
         headers: {
-          'User-Agent': 'PersonaRAG-Crawler/1.0 (+https://personarag.ai)',
+          'User-Agent': 'OpenBot-Crawler/1.0 (+https://open-bot.ai)',
           'Accept': 'text/html,application/xhtml+xml',
         },
       });
@@ -318,6 +335,15 @@ export class WebsiteCrawlCoordinator {
         rawLinks.push(href.trim());
       }
     });
+
+    // Fallback for client-side SPAs (e.g. React/Vite/Vue) with no static <a> tags
+    if (rawLinks.length === 0) {
+      const spaRoutes = await extractSpaRoutesFromHtml(html, validated.validatedUrl.toString());
+      if (spaRoutes.length > 0) {
+        logger.info(`[CrawlCoordinator] Discovered ${spaRoutes.length} SPA route(s) from JS bundle on ${validated.validatedUrl.toString()}`);
+        rawLinks.push(...spaRoutes);
+      }
+    }
 
     return rawLinks;
   }

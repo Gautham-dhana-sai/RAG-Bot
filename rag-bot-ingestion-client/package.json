@@ -2,7 +2,7 @@
   "name": "rag-bot-ingestion-client",
   "version": "1.0.0",
   "type": "module",
-  "description": "Minimal Multi-Tenant Document Ingestion Client for RAG-BOT",
+  "description": "Minimal Multi-Tenant Document Ingestion Client for Open-Bot",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
