@@ -15,7 +15,7 @@ export const Header: React.FC = memo(() => {
     <header className="portal-navbar">
       <div className="nav-brand">
         <span className="brand-logo">🤖</span>
-        <span className="brand-title">RAG-BOT Portals</span>
+        <span className="brand-title">Open-Bot Portals</span>
         {workspaceName && (
           <span className="workspace-pill">🏢 {workspaceName}</span>
         )}

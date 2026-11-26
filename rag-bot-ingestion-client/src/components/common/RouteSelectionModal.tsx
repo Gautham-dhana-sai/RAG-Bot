@@ -13,6 +13,7 @@ interface RouteSelectionModalProps {
   rootUrl: string;
   routes: DiscoveredRouteItem[];
   isSubmitting?: boolean;
+  error?: string | null;
   onConfirm: (selectedUrls: string[]) => void;
   onCancel: () => void;
 }
@@ -22,6 +23,7 @@ export const RouteSelectionModal: React.FC<RouteSelectionModalProps> = memo(({
   rootUrl,
   routes,
   isSubmitting = false,
+  error = null,
   onConfirm,
   onCancel,
 }) => {
@@ -399,6 +401,16 @@ export const RouteSelectionModal: React.FC<RouteSelectionModalProps> = memo(({
             )}
           </div>
         </div>
+
+        {/* Error banner inside modal */}
+        {error && (
+          <div
+            className="alert-box alert-error"
+            style={{ margin: '0.75rem 1.5rem 0', fontSize: '0.85rem' }}
+          >
+            {error}
+          </div>
+        )}
 
         {/* Footer */}
         <div

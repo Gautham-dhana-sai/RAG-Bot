@@ -45,7 +45,7 @@ export const AuthView: React.FC<AuthViewProps> = memo(({ initialMode = 'login' }
       <div className="auth-card">
         <div className="auth-brand">
           <div className="brand-logo-icon">🤖</div>
-          <h1>RAG-BOT</h1>
+          <h1>Open-Bot</h1>
           <p className="auth-subtitle">Enterprise Multi-Tenant Knowledge Ingestion & Retrieval</p>
         </div>
 

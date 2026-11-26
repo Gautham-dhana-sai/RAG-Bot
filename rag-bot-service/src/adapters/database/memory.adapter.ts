@@ -205,7 +205,9 @@ export class MemoryDatabaseAdapter implements IDatabaseAdapter {
   }
 
   async getEntitiesByTenant(tenantId: string): Promise<Entity[]> {
-    return Array.from(this.entities.values()).filter(e => e.tenantId === tenantId);
+    return Array.from(this.entities.values())
+      .filter(e => e.tenantId === tenantId)
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
   }
 
   async createEntity(data: { id?: string; tenantId: string; name: string; slug: string; description?: string; portalUrl?: string; portfolioUrl?: string; isPublic?: boolean }): Promise<Entity> {

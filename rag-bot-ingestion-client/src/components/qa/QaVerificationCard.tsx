@@ -188,7 +188,7 @@ export const QaVerificationCard: React.FC<QaVerificationCardProps> = memo(({
           className="btn-primary qa-submit-btn"
           disabled={isQuerying || !queryText.trim()}
         >
-          {isQuerying ? 'Searching...' : 'Ask RAG Bot'}
+          {isQuerying ? 'Searching...' : 'Ask Open-Bot'}
         </button>
       </form>
 

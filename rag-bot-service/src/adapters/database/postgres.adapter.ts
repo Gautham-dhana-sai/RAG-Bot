@@ -401,7 +401,7 @@ export class PostgresDatabaseAdapter implements IDatabaseAdapter {
 
   async getEntitiesByTenant(tenantId: string): Promise<Entity[]> {
     if (!isValidUuid(tenantId)) return [];
-    const res = await this.pool.query('SELECT * FROM entities WHERE tenant_id = $1 ORDER BY name ASC', [tenantId]);
+    const res = await this.pool.query('SELECT * FROM entities WHERE tenant_id = $1 ORDER BY created_at DESC', [tenantId]);
     return res.rows.map(r => ({
       id: r.id,
       tenantId: r.tenant_id,
@@ -1040,7 +1040,7 @@ export class PostgresDatabaseAdapter implements IDatabaseAdapter {
     );
     const jobs = res.rows.map(r => this.mapCrawlJobRow(r));
     for (let i = 0; i < jobs.length; i++) {
-      if (jobs[i].status === 'processing_pages' || jobs[i].status === 'queued') {
+      if (jobs[i].status === 'discovering' || jobs[i].status === 'processing_pages' || jobs[i].status === 'queued') {
         const synced = await this.syncCrawlJobAggregates(tenantId, jobs[i].id);
         if (synced) {
           jobs[i] = synced;

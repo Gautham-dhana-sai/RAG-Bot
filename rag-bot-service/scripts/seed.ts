@@ -3,7 +3,7 @@ import { logger } from '../src/shared/logger.js';
 import { hashPassword } from '../src/shared/password.js';
 
 async function seed() {
-  logger.info('Starting PersonaRAG Seed script...');
+  logger.info('Starting Open-Bot Seed script...');
   const { db } = await createNestApp();
 
   const defaultPassword = 'Password123!';

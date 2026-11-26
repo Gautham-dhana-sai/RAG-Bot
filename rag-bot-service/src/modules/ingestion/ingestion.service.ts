@@ -863,11 +863,12 @@ export class IngestionService {
     const crawlJobId = generateUuid();
 
     // 1. Create Ingestion Job record with source_type = 'WEBSITE_CRAWL'
+    const initialTotalDocs = config?.selectedUrls?.length ? config.selectedUrls.length : 1;
     await this.db.createIngestionJob({
       id: crawlJobId,
       tenantId,
       entityId,
-      totalDocuments: 1,
+      totalDocuments: initialTotalDocs,
       sourceType: 'WEBSITE_CRAWL',
       metadata: { rootUrl: normalizedRoot, config: config || {}, sourceType: 'website_crawl' },
     });
@@ -897,41 +898,56 @@ export class IngestionService {
       });
     }
 
-    // 3. Enqueue crawl coordinator message to download queue
-    await this.queue.enqueueUrlDownloadJob({
-      tenantId,
-      entityId,
-      jobId: crawlJobId,
-      url: normalizedRoot,
-      portfolioUrl,
-      sourceType: 'website_crawl',
-      action: 'WEBSITE_CRAWL',
-      attempt: 1,
-    });
-
-    // 4. In local mode, invoke coordinator discovery
     const isLocal =
       env.STORAGE_ADAPTER === 'local' ||
       env.QUEUE_ADAPTER === 'local' ||
       this.storage.constructor.name === 'LocalStorageAdapter' ||
       this.queue.constructor.name === 'LocalQueueAdapter';
 
-    if (isLocal && (this.queue as any).isAutoProcess !== false) {
-      setImmediate(async () => {
-        try {
-          const coordinator = new WebsiteCrawlCoordinator(this.db, this.queue);
-          await coordinator.executeDiscovery({
-            tenantId,
-            entityId,
-            crawlJobId,
-            rootUrl: normalizedRoot,
-            portfolioUrl,
-            config,
-          });
-        } catch (err: any) {
-          logger.error(`[IngestionService:Crawl] Local coordinator discovery error:`, err);
-        }
+    // 3. When selectedUrls are already chosen (or running in serverless), run coordinator directly
+    // so all selected pages are persisted & enqueued before returning 202 (avoids Vercel setImmediate termination).
+    const hasSelectedUrls = Boolean(config?.selectedUrls && config.selectedUrls.length > 0);
+    if (hasSelectedUrls && (isLocal ? (this.queue as any).isAutoProcess !== false : true)) {
+      const coordinator = new WebsiteCrawlCoordinator(this.db, this.queue);
+      await coordinator.executeDiscovery({
+        tenantId,
+        entityId,
+        crawlJobId,
+        rootUrl: normalizedRoot,
+        portfolioUrl,
+        config,
       });
+    } else {
+      // Enqueue crawl coordinator message to download queue
+      await this.queue.enqueueUrlDownloadJob({
+        tenantId,
+        entityId,
+        jobId: crawlJobId,
+        url: normalizedRoot,
+        portfolioUrl,
+        sourceType: 'website_crawl',
+        action: 'WEBSITE_CRAWL',
+        attempt: 1,
+      });
+
+      // In local mode, invoke coordinator discovery
+      if (isLocal && (this.queue as any).isAutoProcess !== false) {
+        setImmediate(async () => {
+          try {
+            const coordinator = new WebsiteCrawlCoordinator(this.db, this.queue);
+            await coordinator.executeDiscovery({
+              tenantId,
+              entityId,
+              crawlJobId,
+              rootUrl: normalizedRoot,
+              portfolioUrl,
+              config,
+            });
+          } catch (err: any) {
+            logger.error(`[IngestionService:Crawl] Local coordinator discovery error:`, err);
+          }
+        });
+      }
     }
 
     return {

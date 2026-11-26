@@ -1,4 +1,4 @@
-// Core domain interfaces and types for PersonaRAG
+// Core domain interfaces and types for Open-Bot
 
 export type IngestionJobStatus = 'PENDING' | 'PROCESSING' | 'READY' | 'FAILED';
 export type DocumentProcessingStatus = 'PENDING' | 'PROCESSING' | 'READY' | 'FAILED';

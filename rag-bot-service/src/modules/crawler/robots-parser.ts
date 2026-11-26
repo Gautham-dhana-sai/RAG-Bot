@@ -43,7 +43,7 @@ export class RobotsParser {
         method: 'GET',
         signal: controller.signal,
         headers: {
-          'User-Agent': 'PersonaRAG-Crawler/1.0 (+https://personarag.ai)',
+          'User-Agent': 'OpenBot-Crawler/1.0 (+https://open-bot.ai)',
         },
       });
       clearTimeout(timeout);
@@ -101,8 +101,8 @@ export class RobotsParser {
 
       if (field === 'user-agent') {
         const ua = value.toLowerCase();
-        // We match * or personarag-crawler
-        if (ua === '*' || ua.includes('personarag')) {
+        // We match * or openbot-crawler
+        if (ua === '*' || ua.includes('openbot') || ua.includes('open-bot')) {
           appliesToUs = true;
         } else {
           appliesToUs = false;

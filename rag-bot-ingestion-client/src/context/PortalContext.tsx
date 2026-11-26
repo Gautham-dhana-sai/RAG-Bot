@@ -53,6 +53,9 @@ export const PortalProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         updatedAt: p.updatedAt,
       }));
 
+      normalizedPortals.sort(
+        (a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime()
+      );
       setPortals(normalizedPortals);
       setSelectedPortal(prev => {
         if (prev) {

@@ -85,6 +85,7 @@ export const WebsiteImportSector: React.FC<WebsiteImportSectorProps> = memo(({
   const [duplicateMatch, setDuplicateMatch] = useState<{ url: string; match: any } | null>(null);
   const [discoveredRoutesForSelection, setDiscoveredRoutesForSelection] = useState<{ rootUrl: string; pages: DiscoveredRouteItem[] } | null>(null);
   const [isStartingExtraction, setIsStartingExtraction] = useState(false);
+  const [routeSelectionError, setRouteSelectionError] = useState<string | null>(null);
 
   // Crawl Deletion State (Phase 6)
   const [crawlToDelete, setCrawlToDelete] = useState<CrawlJob | null>(null);
@@ -285,9 +286,11 @@ export const WebsiteImportSector: React.FC<WebsiteImportSectorProps> = memo(({
     }
   }, [getClient, portal.id, onDocumentsUpdated]);
 
-    const handleConfirmRouteSelection = useCallback(async (selectedUrls: string[]) => {
+  const handleConfirmRouteSelection = useCallback(async (selectedUrls: string[]) => {
     if (!discoveredRoutesForSelection) return;
     setIsStartingExtraction(true);
+    setRouteSelectionError(null);
+    setInputError(null);
     try {
       const client = getClient();
       const res = await client.startPortalCrawl(portal.id, {
@@ -297,21 +300,28 @@ export const WebsiteImportSector: React.FC<WebsiteImportSectorProps> = memo(({
         selectedUrls,
       });
       const crawlJobId = res.crawlJobId || res.jobId;
-      if (crawlJobId) {
-        if (onJobStarted) onJobStarted(crawlJobId);
-        const initialJob = await client.getPortalCrawl(portal.id, crawlJobId);
-        setCrawls(prev => [initialJob, ...prev.filter(c => c.id !== crawlJobId)]);
-      }
+      const targetRootUrl = discoveredRoutesForSelection.rootUrl;
       setDiscoveredRoutesForSelection(null);
       setUrlInput('');
-      setSuccessMessage(`Website extraction initiated for "${discoveredRoutesForSelection.rootUrl}" with ${selectedUrls.length} selected pages.`);
+      setSuccessMessage(`Website extraction initiated for "${targetRootUrl}" with ${selectedUrls.length} selected pages.`);
+
+      if (crawlJobId) {
+        if (onJobStarted) onJobStarted(crawlJobId);
+        try {
+          const initialJob = await client.getPortalCrawl(portal.id, crawlJobId);
+          setCrawls(prev => [initialJob, ...prev.filter(c => c.id !== crawlJobId)]);
+        } catch {
+          // Non-fatal: background polling will load the new job card
+          fetchCrawlsData(false);
+        }
+      }
       if (onDocumentsUpdated) onDocumentsUpdated();
     } catch (err: any) {
-      setInputError(err.message || 'Failed to start extraction');
+      setRouteSelectionError(err.message || 'Failed to start extraction. Please try again.');
     } finally {
       setIsStartingExtraction(false);
     }
-  }, [discoveredRoutesForSelection, getClient, portal.id, onJobStarted, onDocumentsUpdated]);
+  }, [discoveredRoutesForSelection, getClient, portal.id, onJobStarted, onDocumentsUpdated, fetchCrawlsData]);
 
   const handleUpdateDuplicate = useCallback(async () => {
     if (!duplicateMatch) return;
@@ -387,7 +397,7 @@ export const WebsiteImportSector: React.FC<WebsiteImportSectorProps> = memo(({
     <div className="website-import-container">
       {/* Guidance */}
       <div className="form-hint" style={{ marginBottom: '1.25rem' }}>
-        <strong>Multi-Page Website Crawling &amp; Ingestion:</strong> Enter any website root URL to ingest into <strong>{portal.name}</strong>. PersonaRAG discovers internal routes within the permitted boundary, extracts static HTML content, uploads normalized Markdown to storage, and generates vector embeddings for AI chat answers.
+        <strong>Multi-Page Website Crawling &amp; Ingestion:</strong> Enter any website root URL to ingest into <strong>{portal.name}</strong>. Open-Bot discovers internal routes within the permitted boundary, extracts static HTML and SPA content, uploads normalized Markdown to storage, and generates vector embeddings for AI chat answers.
         <div style={{ marginTop: '0.4rem', fontSize: '0.78rem', color: '#64748b' }}>
           ℹ️ Public static HTML pages are crawled. Single-page application (SPA) client shells without static text are detected and safely skipped.
         </div>
@@ -866,8 +876,12 @@ export const WebsiteImportSector: React.FC<WebsiteImportSectorProps> = memo(({
         rootUrl={discoveredRoutesForSelection?.rootUrl || ''}
         routes={discoveredRoutesForSelection?.pages || []}
         isSubmitting={isStartingExtraction}
+        error={routeSelectionError}
         onConfirm={handleConfirmRouteSelection}
-        onCancel={() => setDiscoveredRoutesForSelection(null)}
+        onCancel={() => {
+          setDiscoveredRoutesForSelection(null);
+          setRouteSelectionError(null);
+        }}
       />
 
       {/* Website Crawl Delete Confirmation Modal (Phase 6) */}
