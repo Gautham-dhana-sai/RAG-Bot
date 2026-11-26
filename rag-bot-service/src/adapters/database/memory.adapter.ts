@@ -1713,7 +1713,7 @@ export class MemoryDatabaseAdapter implements IDatabaseAdapter {
       m.totalTokens += log.totalTokens;
     }
 
-    if (totalTokens === 0) {
+    if (embeddingTokens === 0) {
       let docCount = 0;
       for (const doc of this.documents.values()) {
         if (doc.tenantId === tenantId && doc.entityId === entityId && doc.status === 'READY' && doc.createdAt >= startDate && doc.createdAt <= endDate) {
