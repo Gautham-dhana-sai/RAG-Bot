@@ -47,8 +47,10 @@ const AppRoutes: React.FC = memo(() => {
         {/* Portals Dashboard Overview */}
         <Route path="/portals" element={<PortalsDashboardView />} />
 
-        {/* Inside Portal Workspace (Single page) */}
+        {/* Inside Portal Workspace & Analytics (with tab & subTab reloadable routes) */}
         <Route path="/portals/:portalId" element={<PortalWorkspaceLayout />} />
+        <Route path="/portals/:portalId/:tab" element={<PortalWorkspaceLayout />} />
+        <Route path="/portals/:portalId/:tab/:subTab" element={<PortalWorkspaceLayout />} />
       </Route>
 
       {/* Landing & Fallback */}

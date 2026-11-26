@@ -1,5 +1,5 @@
 import React, { memo, useState, useCallback, useRef, useEffect, useMemo } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useLocation, useSearchParams } from 'react-router-dom';
 import { Portal, IngestionJob, IngestionJobDocument } from '../../types';
 import { useAuth } from '../../context/AuthContext';
 import { usePortal } from '../../context/PortalContext';
@@ -12,7 +12,9 @@ import { DeleteConfirmModal } from '../common/DeleteConfirmModal';
 import { PortalAnalyticsView } from '../analytics/PortalAnalyticsView';
 
 export const PortalWorkspaceLayout: React.FC = memo(() => {
-  const { portalId } = useParams<{ portalId: string }>();
+  const { portalId, tab } = useParams<{ portalId: string; tab?: string; subTab?: string }>();
+  const [searchParams] = useSearchParams();
+  const location = useLocation();
   const navigate = useNavigate();
   const { getClient } = useAuth();
   const {
@@ -45,7 +47,32 @@ export const PortalWorkspaceLayout: React.FC = memo(() => {
   // Modal & deletion state
   const [isDeleting, setIsDeleting] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
-  const [activeTab, setActiveTab] = useState<'workspace' | 'analytics'>('workspace');
+
+  // Derive active tab from URL path (:tab), query param (?tab=analytics), or hash fragment (#analytics / #subTab)
+  const ANALYTICS_SUBTABS = ['overview', 'sources', 'performance', 'tokens', 'chat', 'activity', 'failures'];
+  const hashClean = location.hash.replace(/^#\/?/, '').toLowerCase();
+  const queryTab = searchParams.get('tab')?.toLowerCase();
+  const querySubTab = searchParams.get('subTab')?.toLowerCase();
+  const isAnalyticsFromUrl =
+    tab?.toLowerCase() === 'analytics' ||
+    queryTab === 'analytics' ||
+    Boolean(querySubTab && ANALYTICS_SUBTABS.includes(querySubTab)) ||
+    hashClean === 'analytics' ||
+    hashClean.startsWith('analytics/') ||
+    ANALYTICS_SUBTABS.includes(hashClean);
+  const activeTab: 'workspace' | 'analytics' = isAnalyticsFromUrl ? 'analytics' : 'workspace';
+
+  const handleMainTabChange = useCallback(
+    (nextTab: 'workspace' | 'analytics') => {
+      if (!portalId) return;
+      if (nextTab === 'analytics') {
+        navigate(`/portals/${portalId}/analytics/overview`);
+      } else {
+        navigate(`/portals/${portalId}`);
+      }
+    },
+    [portalId, navigate]
+  );
 
   // Active Job Tracking state
   const [currentJob, setCurrentJob] = useState<IngestionJob | null>(null);
@@ -266,7 +293,7 @@ export const PortalWorkspaceLayout: React.FC = memo(() => {
       >
         <button
           type="button"
-          onClick={() => setActiveTab('workspace')}
+          onClick={() => handleMainTabChange('workspace')}
           style={{
             display: 'flex',
             alignItems: 'center',
@@ -289,7 +316,7 @@ export const PortalWorkspaceLayout: React.FC = memo(() => {
 
         <button
           type="button"
-          onClick={() => setActiveTab('analytics')}
+          onClick={() => handleMainTabChange('analytics')}
           style={{
             display: 'flex',
             alignItems: 'center',
