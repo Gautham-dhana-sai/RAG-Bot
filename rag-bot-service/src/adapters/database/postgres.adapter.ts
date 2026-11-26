@@ -2211,27 +2211,47 @@ export class PostgresDatabaseAdapter implements IDatabaseAdapter {
       `SELECT
         COALESCE(SUM(total_tokens), 0)::bigint as total_tokens,
         COALESCE(SUM(total_tokens) FILTER (WHERE request_origin = 'PORTAL_UI'), 0)::bigint as portal_ui_tokens,
-        COALESCE(SUM(total_tokens) FILTER (WHERE request_origin = 'EXTERNAL_INTEGRATION'), 0)::bigint as external_tokens
+        COALESCE(SUM(total_tokens) FILTER (WHERE request_origin = 'EXTERNAL_INTEGRATION'), 0)::bigint as external_tokens,
+        COALESCE(SUM(total_tokens) FILTER (WHERE operation_type = 'EMBEDDING'), 0)::bigint as embedding_tokens,
+        COUNT(*) FILTER (WHERE operation_type = 'EMBEDDING')::int as embedding_requests
        FROM ai_token_logs
        WHERE tenant_id = $1 AND entity_id = $2
          AND created_at >= $3 AND created_at <= $4`,
       [tenantId, entityId, startDate, endDate]
     );
-    let tRow = tokenRes.rows[0] || { total_tokens: 0, portal_ui_tokens: 0, external_tokens: 0 };
-    if (Number(tRow.total_tokens || 0) === 0) {
-      const chunkTokensRes = await this.pool.query(
-        `SELECT ROUND(COALESCE(SUM(LENGTH(c.chunk_text) / 4), 0))::bigint as est_tokens
-         FROM document_chunks c
-         JOIN documents d ON d.id = c.document_id
-         WHERE d.tenant_id = $1 AND d.entity_id = $2
-           AND d.status = 'READY'
-           AND d.created_at >= $3 AND d.created_at <= $4`,
-        [tenantId, entityId, startDate, endDate]
-      );
-      const estTokens = Number(chunkTokensRes.rows[0]?.est_tokens || 0);
-      if (estTokens > 0) {
-        tRow = { total_tokens: estTokens, portal_ui_tokens: estTokens, external_tokens: 0 };
-      }
+    const tRow = tokenRes.rows[0] || {
+      total_tokens: 0,
+      portal_ui_tokens: 0,
+      external_tokens: 0,
+      embedding_tokens: 0,
+      embedding_requests: 0,
+    };
+    let ovTotalTokens = Number(tRow.total_tokens || 0);
+    let ovPortalUiTokens = Number(tRow.portal_ui_tokens || 0);
+    const ovExternalTokens = Number(tRow.external_tokens || 0);
+    const ovEmbeddingTokens = Number(tRow.embedding_tokens || 0);
+    const ovEmbeddingRequests = Number(tRow.embedding_requests || 0);
+
+    const ovChunkTokensRes = await this.pool.query(
+      `SELECT
+         COUNT(DISTINCT d.id)::int as doc_count,
+         ROUND(COALESCE(SUM(LENGTH(c.chunk_text) / 4), 0))::bigint as est_tokens
+       FROM document_chunks c
+       JOIN documents d ON d.id = c.document_id
+       WHERE d.tenant_id = $1 AND d.entity_id = $2
+         AND d.status = 'READY'
+         AND d.created_at >= $3 AND d.created_at <= $4`,
+      [tenantId, entityId, startDate, endDate]
+    );
+    const ovEstTokens = Number(ovChunkTokensRes.rows[0]?.est_tokens || 0);
+    const ovReadyDocs = Number(ovChunkTokensRes.rows[0]?.doc_count || 0);
+    if (
+      ovEstTokens > 0 &&
+      (ovEmbeddingTokens === 0 || (ovReadyDocs > ovEmbeddingRequests && ovEstTokens > ovEmbeddingTokens))
+    ) {
+      const deltaTokens = ovEmbeddingTokens === 0 ? ovEstTokens : (ovEstTokens - ovEmbeddingTokens);
+      ovTotalTokens += deltaTokens;
+      ovPortalUiTokens += deltaTokens;
     }
 
     return {
@@ -2242,9 +2262,9 @@ export class PostgresDatabaseAdapter implements IDatabaseAdapter {
       successRatePercentage: successRate,
       averageProcessingTimeMs: avgDuration,
       totalChatQuestions: chatQuestions,
-      totalTokensConsumed: Number(tRow.total_tokens || 0),
-      externalIntegrationTokens: Number(tRow.external_tokens || 0),
-      portalUiTokens: Number(tRow.portal_ui_tokens || 0),
+      totalTokensConsumed: ovTotalTokens,
+      externalIntegrationTokens: ovExternalTokens,
+      portalUiTokens: ovPortalUiTokens,
       period: periodLabel,
       timezone: 'UTC',
     };
@@ -2672,6 +2692,7 @@ export class PostgresDatabaseAdapter implements IDatabaseAdapter {
         COALESCE(SUM(total_tokens) FILTER (WHERE request_origin = 'PORTAL_UI'), 0)::bigint as portal_ui_tokens,
         COALESCE(SUM(total_tokens) FILTER (WHERE request_origin = 'EXTERNAL_INTEGRATION'), 0)::bigint as external_tokens,
         COUNT(*) FILTER (WHERE operation_type = 'CHAT_COMPLETION')::int as chat_questions,
+        COUNT(*) FILTER (WHERE operation_type = 'EMBEDDING')::int as embedding_requests,
         COUNT(*)::int as total_requests
        FROM ai_token_logs
        WHERE tenant_id = $1 AND entity_id = $2
@@ -2689,6 +2710,7 @@ export class PostgresDatabaseAdapter implements IDatabaseAdapter {
     let portalUiTokens = Number(s.portal_ui_tokens || 0);
     const externalTokens = Number(s.external_tokens || 0);
     const chatQuestions = Number(s.chat_questions || 0);
+    const embeddingRequests = Number(s.embedding_requests || 0);
     let totalRequests = Number(s.total_requests || 0);
 
     // By model
@@ -2721,40 +2743,52 @@ export class PostgresDatabaseAdapter implements IDatabaseAdapter {
       isEstimated: Boolean(r.is_estimated),
     }));
 
-    if (totalTokens === 0) {
-      const chunkTokensRes = await this.pool.query(
-        `SELECT
-           COUNT(DISTINCT d.id)::int as doc_count,
-           COUNT(c.id)::int as chunk_count,
-           ROUND(COALESCE(SUM(LENGTH(c.chunk_text) / 4), 0))::bigint as est_tokens
-         FROM document_chunks c
-         JOIN documents d ON d.id = c.document_id
-         WHERE d.tenant_id = $1 AND d.entity_id = $2
-           AND d.status = 'READY'
-           AND d.created_at >= $3 AND d.created_at <= $4`,
-        [tenantId, entityId, startDate, endDate]
-      );
-      const row = chunkTokensRes.rows[0];
-      const estTokens = Number(row?.est_tokens || 0);
-      const docCount = Number(row?.doc_count || 0);
-      if (estTokens > 0) {
-        totalTokens = estTokens;
-        inputTokens = estTokens;
-        embeddingTokens = estTokens;
-        portalUiTokens = estTokens;
-        totalRequests = docCount;
+    const chunkTokensRes = await this.pool.query(
+      `SELECT
+         COUNT(DISTINCT d.id)::int as doc_count,
+         COUNT(c.id)::int as chunk_count,
+         ROUND(COALESCE(SUM(LENGTH(c.chunk_text) / 4), 0))::bigint as est_tokens
+       FROM document_chunks c
+       JOIN documents d ON d.id = c.document_id
+       WHERE d.tenant_id = $1 AND d.entity_id = $2
+         AND d.status = 'READY'
+         AND d.created_at >= $3 AND d.created_at <= $4`,
+      [tenantId, entityId, startDate, endDate]
+    );
+    const row = chunkTokensRes.rows[0];
+    const estChunkTokens = Number(row?.est_tokens || 0);
+    const readyDocCount = Number(row?.doc_count || 0);
 
-        byModel = [{
+    if (estChunkTokens > 0 && (embeddingTokens === 0 || (readyDocCount > embeddingRequests && estChunkTokens > embeddingTokens))) {
+      const deltaTokens = embeddingTokens === 0 ? estChunkTokens : (estChunkTokens - embeddingTokens);
+      const deltaDocs = embeddingTokens === 0 ? readyDocCount : Math.max(1, readyDocCount - embeddingRequests);
+
+      totalTokens += deltaTokens;
+      inputTokens += deltaTokens;
+      embeddingTokens += deltaTokens;
+      portalUiTokens += deltaTokens;
+      totalRequests += deltaDocs;
+
+      const existingEmbedModel = byModel.find(
+        m => m.modelName.toLowerCase().includes('embed') || m.model?.toLowerCase().includes('embed')
+      );
+      if (existingEmbedModel) {
+        existingEmbedModel.requestCount += deltaDocs;
+        existingEmbedModel.count = existingEmbedModel.requestCount;
+        existingEmbedModel.inputTokens += deltaTokens;
+        existingEmbedModel.totalTokens += deltaTokens;
+      } else {
+        byModel.push({
           provider: 'gemini',
           model: 'gemini-embedding-001',
           modelName: 'gemini-embedding-001',
-          count: docCount,
-          requestCount: docCount,
-          inputTokens: estTokens,
+          count: deltaDocs,
+          requestCount: deltaDocs,
+          inputTokens: deltaTokens,
           outputTokens: 0,
-          totalTokens: estTokens,
+          totalTokens: deltaTokens,
           isEstimated: true,
-        }];
+        });
       }
     }
 
