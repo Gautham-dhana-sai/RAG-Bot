@@ -21,6 +21,8 @@ export interface ExecuteConversationTurnParams {
   generationService: GenerationService;
   citationsService: CitationsService;
   analyticsService?: AnalyticsService;
+  portalName?: string;
+  includeCitations?: boolean;
 }
 
 /**
@@ -41,6 +43,8 @@ export async function executeConversationTurn(params: ExecuteConversationTurnPar
     generationService,
     citationsService,
     analyticsService,
+    portalName,
+    includeCitations = true,
   } = params;
 
   const schema = z.object({
@@ -138,6 +142,7 @@ export async function executeConversationTurn(params: ExecuteConversationTurnPar
     question: userQuestion,
     conversationHistory: historyChatMessages,
     retrievedChunks,
+    portalName,
   });
 
   // 6. Save initial Assistant Message
@@ -210,13 +215,13 @@ export async function executeConversationTurn(params: ExecuteConversationTurnPar
     .replace(/\(\s*$/g, '')
     .replace(/[ \t]+([.,!?;:])/g, '$1')
     .replace(/[^\S\r\n]{2,}/g, ' ')
-    .replace(/([^\n])\s*([•*]|\s-\s)\s*/g, '$1\n• ')
+    .replace(/([^\n])\s*(•|\s-\s)\s*/g, '$1\n• ')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 
   const responseBody: any = {
     answer: cleanAnswerText,
-    citations: verifiedCitations,
+    ...(includeCitations ? { citations: verifiedCitations } : {}),
     insufficientEvidence: generation.insufficientEvidence,
     confidence: generation.confidence,
     conversationId,

@@ -152,7 +152,7 @@ export class OpenAIAIAdapter implements IAIAdapter {
 
     const isGoogle = this.baseUrl.includes('googleapis.com');
     const modelsToTry = isGoogle
-      ? ['gemini-3.6-flash', 'gemini-3.8-flash', 'gemini-flash-latest']
+      ? ['gemini-4-hydrogen', 'gemini-3.8-flash', 'gemini-3.6-flash', 'gemini-flash-latest']
       : [this.chatModel, 'gpt-4o-mini', 'gpt-3.5-turbo'];
 
     for (const model of modelsToTry) {
@@ -200,12 +200,13 @@ export class OpenAIAIAdapter implements IAIAdapter {
     const fallbackKey = env.COHERE_API_KEY || '';
     const isGoogle = this.baseUrl.includes('googleapis.com');
 
-    // Round-robin model sequence: flash 2.5, 3.6, and 3.8 in order for 5 retry rounds
+    // Round-robin model sequence: gemini-4-hydrogen first, with 3.8, 3.6, and 2.5 flash fallbacks
     const roundRobinModels = isGoogle
       ? [
-          { name: 'gemini-2.5-flash', alt: 'gemini-3.6-flash' },
-          { name: 'gemini-3.6-flash', alt: 'gemini-3.8-flash' },
+          { name: 'gemini-4-hydrogen', alt: 'gemini-3.8-flash' },
           { name: 'gemini-3.8-flash', alt: 'gemini-3.6-flash' },
+          { name: 'gemini-3.6-flash', alt: 'gemini-2.5-flash' },
+          { name: 'gemini-2.5-flash', alt: 'gemini-3.8-flash' },
         ]
       : [
           { name: this.chatModel, alt: 'gpt-4o-mini' },

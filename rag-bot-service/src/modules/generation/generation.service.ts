@@ -11,6 +11,8 @@ export class GenerationService {
     question: string;
     conversationHistory: ChatMessage[];
     retrievedChunks: ScoredChunk[];
+    portalName?: string;
+    assistantName?: string;
   }): Promise<{
     answer: string;
     insufficientEvidence: boolean;
@@ -19,15 +21,20 @@ export class GenerationService {
     model?: string;
     provider?: string;
   }> {
-    const { question, conversationHistory, retrievedChunks } = params;
+    const { question, conversationHistory, retrievedChunks, portalName, assistantName } = params;
 
     const evidenceContext = this.promptBuilder.buildEvidenceContext(retrievedChunks);
-    const systemPrompt = this.promptBuilder.buildSystemPrompt();
+    const systemPrompt = this.promptBuilder.buildSystemPrompt({ portalName, assistantName });
 
-    // If no chunks retrieved at all, return explicit abstention immediately
-    if (retrievedChunks.length === 0) {
+    const isGreetingOrIntro =
+      /^(hi|hello|hey|good\s+(morning|afternoon|evening)|greetings|who\s+are\s+you|what\s+is\s+your\s+name|tell\s+me\s+about\s+yourself|about\s+yourself|what\s+can\s+you\s+do|how\s+can\s+you\s+help)[\s!?.]*$/i.test(
+        question.trim()
+      );
+
+    // If no chunks retrieved at all and it's not a conversational greeting/intro, return polite fallback
+    if (retrievedChunks.length === 0 && !isGreetingOrIntro) {
       return {
-        answer: 'Insufficient evidence: I do not have sufficient evidence in the uploaded documents to answer this question.',
+        answer: "I don't have that information right now. How can I help you?",
         insufficientEvidence: true,
         confidence: 0.0,
       };
@@ -41,20 +48,25 @@ export class GenerationService {
     const result = await this.ai.generateAnswer({
       systemPrompt,
       messages,
-      evidenceContext,
-      temperature: 0.1,
+      evidenceContext: evidenceContext || '(No specific context needed for a greeting or introduction.)',
+      temperature: isGreetingOrIntro ? 0.4 : 0.1,
     });
 
     const lowerAnswer = result.text.toLowerCase();
     const insufficientEvidence =
-      lowerAnswer.includes('insufficient evidence') ||
-      lowerAnswer.includes('do not have sufficient') ||
-      lowerAnswer.includes('no evidence');
+      !isGreetingOrIntro &&
+      (lowerAnswer.includes('insufficient evidence') ||
+        lowerAnswer.includes('do not have sufficient') ||
+        lowerAnswer.includes('no evidence'));
 
     // Calculate confidence based on average top retrieved chunk score
     const avgScore =
       retrievedChunks.reduce((acc, c) => acc + c.score, 0) / (retrievedChunks.length || 1);
-    const confidence = insufficientEvidence ? 0.0 : Math.min(1.0, Math.max(0.1, avgScore * 50));
+    const confidence = isGreetingOrIntro
+      ? 1.0
+      : insufficientEvidence
+        ? 0.0
+        : Math.min(1.0, Math.max(0.1, avgScore * 50));
 
     return {
       answer: result.text,
